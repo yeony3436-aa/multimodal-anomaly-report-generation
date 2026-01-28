@@ -1,0 +1,22 @@
+paths:
+  # You can override these via .env (see .env.example)
+  data_root: ${MMAD_DATA_ROOT:-/Volumes/T7/Dataset/MMAD}
+  mmad_json: ${MMAD_JSON_PATH:-/Volumes/T7/Dataset/MMAD/mmad.json}
+  artifact_root: ${ARTIFACT_ROOT:-./outputs}
+  db_path: ${DB_PATH:-./outputs/results.sqlite3}
+
+anomaly:
+  model: dummy  # dummy | patchcore | anomalyclip (later)
+  dummy:
+    blur_ksize: 5
+    edge_low: 50
+    edge_high: 150
+
+mllm:
+  client: echo  # echo | qwen_local | api_openai (later)
+  echo:
+    language: ko
+    seed: 0
+
+report:
+  schema_path: configs/report_schema.json

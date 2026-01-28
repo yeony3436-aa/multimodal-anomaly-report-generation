@@ -1,0 +1,42 @@
+# ===== Output / Artifact =====
+outputs/
+runs/
+checkpoints/
+weights/
+logs/
+wandb/
+
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ===== Env =====
+.env
+.venv/
+venv/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== IDE =====
+.vscode/
+.idea/
+
+# ===== Etc ====
+*.pt
+*.ckpt
+*.log
+*.csv
+*.sqlite
+*.db
+*.zip
+*.tar.gz
+*.egg-info/
+/dist
+/build
+.eggs/
+*.egg

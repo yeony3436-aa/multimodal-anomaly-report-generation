@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmad-inspector"
+version = "0.1.0"
+description = "MMAD-style evaluation + anomaly inspection -> structured defect -> report pipeline (MVP)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi==0.115.0",
+  "uvicorn==0.30.6",
+  "pydantic==2.8.2",
+  "pydantic-settings==2.4.0",
+  "pyyaml==6.0.2",
+  "numpy==2.1.1",
+  "opencv-python==4.10.0.84",
+  "pillow==10.4.0",
+  "streamlit==1.37.1",
+  "python-multipart==0.0.9",
+  "requests==2.32.3",
+  "tqdm==4.66.5",
+  "jsonschema==4.23.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
