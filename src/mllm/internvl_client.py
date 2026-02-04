@@ -169,7 +169,7 @@ class InternVLClient(BaseLLMClient):
 
         layer_cnt = 0
         for i, num_layer in enumerate(num_layers_per_gpu):
-            for j in range(num_layer):
+            for _ in range(num_layer):
                 device_map[f'language_model.model.layers.{layer_cnt}'] = i
                 layer_cnt += 1
 
@@ -198,12 +198,14 @@ class InternVLClient(BaseLLMClient):
 
         torch.set_grad_enabled(False)
 
+        # Note: InternVL2 custom code has issues with low_cpu_mem_usage=True
+        # due to calling .item() during initialization. We disable it.
         if self.num_gpus > 1:
             device_map = self._split_model(model_name)
             self._model = AutoModel.from_pretrained(
                 self.model_path,
                 torch_dtype=torch_dtype,
-                low_cpu_mem_usage=True,
+                low_cpu_mem_usage=False,  # Must be False for InternVL2
                 trust_remote_code=True,
                 device_map=device_map
             ).eval()
@@ -211,10 +213,10 @@ class InternVLClient(BaseLLMClient):
             self._model = AutoModel.from_pretrained(
                 self.model_path,
                 torch_dtype=torch_dtype,
-                low_cpu_mem_usage=True,
+                low_cpu_mem_usage=False,  # Must be False for InternVL2
                 trust_remote_code=True
             ).eval()
-            if self.device == "cuda":
+            if self.device == "cuda" and torch.cuda.is_available():
                 self._model = self._model.cuda()
 
         self._tokenizer = AutoTokenizer.from_pretrained(
@@ -349,7 +351,7 @@ class InternVLClient(BaseLLMClient):
             conversation_text = part_questions[0]["text"]
             query = base_prompt + conversation_text
 
-            response, temp_history = self._model.chat(
+            response, _history = self._model.chat(
                 self._tokenizer,
                 pixel_values,
                 query,
@@ -358,6 +360,7 @@ class InternVLClient(BaseLLMClient):
                 history=history,
                 return_history=True
             )
+            # Note: _history is intentionally unused (no conversation history by default)
 
             print(f"Response: {response}")
 
