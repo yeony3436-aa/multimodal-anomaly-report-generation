@@ -41,6 +41,94 @@ from src.utils import load_config, setup_seed, get_device, normalize_anomaly_map
 from src.dataset import InferenceDataset
 
 
+def save_visualization(
+    image_path: str,
+    anomaly_map: np.ndarray,
+    anomaly_score: float,
+    data_root: Path,
+    vis_dir: Path,
+    threshold: float = 0.5,
+):
+    """Save heatmap and overlay visualization.
+
+    Args:
+        image_path: Relative path to original image
+        anomaly_map: Normalized anomaly map (0-1)
+        anomaly_score: Anomaly score
+        data_root: Root directory of images
+        vis_dir: Directory to save visualizations
+        threshold: Threshold for anomaly region mask
+    """
+    # Load original image
+    full_path = data_root / image_path
+    original = cv2.imread(str(full_path))
+    if original is None:
+        return
+
+    h, w = original.shape[:2]
+
+    # Resize anomaly map to original size
+    anomaly_map_resized = cv2.resize(anomaly_map, (w, h))
+
+    # 1. Create heatmap
+    heatmap = cv2.applyColorMap(
+        (anomaly_map_resized * 255).astype(np.uint8),
+        cv2.COLORMAP_JET
+    )
+
+    # 2. Create overlay (heatmap on original)
+    overlay = cv2.addWeighted(original, 0.6, heatmap, 0.4, 0)
+
+    # 3. Create anomaly region highlight
+    mask = (anomaly_map_resized > threshold).astype(np.uint8)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    highlight = original.copy()
+    cv2.drawContours(highlight, contours, -1, (0, 0, 255), 2)  # Red contours
+
+    # Fill anomaly regions with semi-transparent red
+    red_overlay = original.copy()
+    red_overlay[mask == 1] = [0, 0, 255]
+    highlight = cv2.addWeighted(highlight, 0.7, red_overlay, 0.3, 0)
+
+    # Add score text
+    cv2.putText(
+        overlay,
+        f"Score: {anomaly_score:.4f}",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        highlight,
+        f"Score: {anomaly_score:.4f}",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2,
+    )
+
+    # Create output paths (preserve directory structure)
+    rel_dir = Path(image_path).parent
+    stem = Path(image_path).stem
+
+    heatmap_dir = vis_dir / "heatmap" / rel_dir
+    overlay_dir = vis_dir / "overlay" / rel_dir
+    highlight_dir = vis_dir / "highlight" / rel_dir
+
+    heatmap_dir.mkdir(parents=True, exist_ok=True)
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    highlight_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save images
+    cv2.imwrite(str(heatmap_dir / f"{stem}_heatmap.png"), heatmap)
+    cv2.imwrite(str(overlay_dir / f"{stem}_overlay.png"), overlay)
+    cv2.imwrite(str(highlight_dir / f"{stem}_highlight.png"), highlight)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run PatchCore inference for LLM evaluation")
 
@@ -78,6 +166,17 @@ def parse_args():
         type=float,
         default=None,
         help="Anomaly score threshold (overrides config). Use score statistics to tune.",
+    )
+    parser.add_argument(
+        "--save-visualizations",
+        action="store_true",
+        help="Save heatmap and overlay visualizations",
+    )
+    parser.add_argument(
+        "--vis-dir",
+        type=str,
+        default=None,
+        help="Directory to save visualizations (default: output_dir/visualizations)",
     )
     parser.add_argument(
         "--seed",
@@ -127,7 +226,7 @@ def process_batch(
     original_sizes: List[tuple],
     score_threshold: float,
     device: torch.device,
-) -> List[Dict]:
+) -> tuple:
     """Process a batch of images.
 
     Args:
@@ -138,7 +237,7 @@ def process_batch(
         device: Device
 
     Returns:
-        List of result dictionaries
+        Tuple of (results list, normalized anomaly maps list)
     """
     images = images.to(device)
 
@@ -149,6 +248,8 @@ def process_batch(
     maps = maps.cpu().numpy()
 
     results = []
+    anomaly_maps_norm = []
+
     for i in range(len(scores)):
         anomaly_map = maps[i]
         score = float(scores[i])
@@ -160,17 +261,7 @@ def process_batch(
 
         # Normalize map for visualization (0-1)
         anomaly_map_norm = normalize_anomaly_map(anomaly_map)
-
-        # Resize map to original size
-        orig_h, orig_w = original_sizes[i]
-        if orig_h > 0 and orig_w > 0:
-            anomaly_map_resized = cv2.resize(
-                anomaly_map_norm,
-                (orig_w, orig_h),
-                interpolation=cv2.INTER_LINEAR,
-            )
-        else:
-            anomaly_map_resized = anomaly_map_norm
+        anomaly_maps_norm.append(anomaly_map_norm)
 
         # is_anomaly는 raw score 기준으로 판단 (threshold는 나중에 조정 가능)
         is_anomaly = score > score_threshold
@@ -194,7 +285,7 @@ def process_batch(
 
         results.append(result)
 
-    return results
+    return results, anomaly_maps_norm
 
 
 def main():
@@ -223,6 +314,15 @@ def main():
         threshold = config.get("evaluation", {}).get("threshold", 0.5)
 
     print(f"Anomaly score threshold: {threshold}")
+
+    # Visualization settings
+    save_vis = args.save_visualizations
+    if save_vis:
+        vis_dir = Path(args.vis_dir) if args.vis_dir else output_path.parent / "visualizations"
+        vis_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Saving visualizations to: {vis_dir}")
+    else:
+        vis_dir = None
 
     if not mmad_json_path.exists():
         print(f"Error: mmad.json not found: {mmad_json_path}")
@@ -330,7 +430,7 @@ def main():
 
             # Process batch
             try:
-                batch_results = process_batch(
+                batch_results, batch_maps = process_batch(
                     model=model,
                     images=images,
                     original_sizes=original_sizes,
@@ -339,8 +439,9 @@ def main():
                 )
 
                 # Add metadata and append results
-                for idx, result in zip(valid_indices.tolist(), batch_results):
-                    result["image_path"] = batch["image_path"][idx]
+                for i, (idx, result) in enumerate(zip(valid_indices.tolist(), batch_results)):
+                    image_path = batch["image_path"][idx]
+                    result["image_path"] = image_path
                     result["metadata"] = {
                         "dataset": dataset_name,
                         "class_name": category,
@@ -349,8 +450,21 @@ def main():
                     results.append(result)
                     processed += 1
 
+                    # Save visualizations if enabled
+                    if save_vis and vis_dir:
+                        save_visualization(
+                            image_path=image_path,
+                            anomaly_map=batch_maps[i],
+                            anomaly_score=result["anomaly_score"],
+                            data_root=data_root,
+                            vis_dir=vis_dir,
+                            threshold=0.5,  # visualization용 threshold
+                        )
+
             except Exception as e:
                 print(f"\nError: {e}")
+                import traceback
+                traceback.print_exc()
                 errors += len(valid_indices)
 
             # Handle invalid images
