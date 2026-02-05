@@ -25,7 +25,7 @@ Usage:
     python scripts/eval_llm_baseline.py --model llava --few-shot 1 --similar-template --max-images 5
 
     # === With Anomaly Detection Model ===
-    python scripts/eval_llm_baseline.py --model gpt-4o --with-ad --ad-output outputs/predictions.json
+    python scripts/eval_llm_baseline.py --model gpt-4o --with-ad --ad-output output/ad_predictions.json
 """
 from __future__ import annotations
 
@@ -224,7 +224,7 @@ def main():
                         help="How to present AD model output to LLM")
 
     # Output settings
-    parser.add_argument("--output-dir", type=str, default="outputs/eval",
+    parser.add_argument("--output-dir", type=str, default="output/eval",
                         help="Output directory for results")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from existing results file")
