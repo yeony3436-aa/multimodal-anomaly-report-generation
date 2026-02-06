@@ -32,6 +32,10 @@ Usage:
     # === Force batch mode for local models (faster but less accurate) ===
     python scripts/eval_llm_baseline.py --model llava --batch-mode
 
+    # === Quick experiments with sampling (10% stratified sample) ===
+    python scripts/eval_llm_baseline.py --model llava --sample-ratio 0.1
+    python scripts/eval_llm_baseline.py --model llava --sample-ratio 0.2 --sample-seed 123
+
     # === With Anomaly Detection Model ===
     python scripts/eval_llm_baseline.py --model gpt-4o --with-ad --ad-output output/ad_predictions.json
 
@@ -222,6 +226,10 @@ def main():
                         help="Use similar templates instead of random")
     parser.add_argument("--max-images", type=int, default=None,
                         help="Max images to evaluate (for testing)")
+    parser.add_argument("--sample-ratio", type=float, default=None,
+                        help="Sample ratio (0.0-1.0) for quick experiments. E.g., 0.1 for 10%%. Uses stratified sampling by category.")
+    parser.add_argument("--sample-seed", type=int, default=42,
+                        help="Random seed for sampling (default: 42, for reproducibility)")
     parser.add_argument("--batch-mode", action="store_true",
                         help="Ask all questions in one API call (faster, good for API models)")
     parser.add_argument("--incremental-mode", action="store_true",
@@ -353,11 +361,42 @@ def main():
     # Load dataset
     mmad_data = load_mmad_data(mmad_json)
     image_paths = list(mmad_data.keys())
+    total_available = len(image_paths)
+
+    # Stratified sampling by category (for quick experiments)
+    if args.sample_ratio is not None:
+        import random
+        from collections import defaultdict
+
+        random.seed(args.sample_seed)
+        ratio = max(0.0, min(1.0, args.sample_ratio))
+
+        # Group images by category (dataset/class)
+        images_by_category = defaultdict(list)
+        for img_path in image_paths:
+            parts = img_path.split("/")
+            if len(parts) >= 2:
+                category = f"{parts[0]}/{parts[1]}"
+            else:
+                category = "unknown"
+            images_by_category[category].append(img_path)
+
+        # Sample from each category proportionally
+        sampled_paths = []
+        for category, paths in images_by_category.items():
+            n_sample = max(1, int(len(paths) * ratio))  # At least 1 per category
+            sampled = random.sample(paths, min(n_sample, len(paths)))
+            sampled_paths.extend(sampled)
+
+        random.shuffle(sampled_paths)  # Shuffle to mix categories
+        image_paths = sampled_paths
+        print(f"Stratified sampling: {ratio*100:.0f}% from {len(images_by_category)} categories")
+        print(f"  Total: {total_available} -> Sampled: {len(image_paths)}")
 
     if args.max_images:
         image_paths = image_paths[:args.max_images]
 
-    print(f"Total images: {len(image_paths)}")
+    print(f"Images to evaluate: {len(image_paths)}")
     print()
 
     # Track statistics
