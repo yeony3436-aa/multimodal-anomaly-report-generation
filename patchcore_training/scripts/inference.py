@@ -47,17 +47,19 @@ def save_visualization(
     anomaly_score: float,
     data_root: Path,
     vis_dir: Path,
-    threshold: float = 0.5,
+    score_threshold: float = 3.0,
+    global_max: float = 5.0,
 ):
     """Save heatmap and overlay visualization.
 
     Args:
         image_path: Relative path to original image
-        anomaly_map: Normalized anomaly map (0-1)
+        anomaly_map: Raw anomaly map (not normalized)
         anomaly_score: Anomaly score
         data_root: Root directory of images
         vis_dir: Directory to save visualizations
-        threshold: Threshold for anomaly region mask
+        score_threshold: Score threshold for anomaly detection
+        global_max: Global max for normalization (prevents normal images from looking hot)
     """
     # Load original image
     full_path = data_root / image_path
@@ -70,46 +72,47 @@ def save_visualization(
     # Resize anomaly map to original size
     anomaly_map_resized = cv2.resize(anomaly_map, (w, h))
 
+    # Global normalization (not per-image) - 정상 이미지가 빨갛게 보이지 않도록
+    # score_threshold 기준으로 정규화: threshold 이하는 파랑, 이상은 빨강
+    anomaly_map_norm = np.clip(anomaly_map_resized / global_max, 0, 1)
+
     # 1. Create heatmap
     heatmap = cv2.applyColorMap(
-        (anomaly_map_resized * 255).astype(np.uint8),
+        (anomaly_map_norm * 255).astype(np.uint8),
         cv2.COLORMAP_JET
     )
 
     # 2. Create overlay (heatmap on original)
-    overlay = cv2.addWeighted(original, 0.6, heatmap, 0.4, 0)
+    # 정상 이미지면 overlay 비중 낮춤
+    is_anomaly = anomaly_score > score_threshold
+    alpha = 0.4 if is_anomaly else 0.2
+    overlay = cv2.addWeighted(original, 1 - alpha, heatmap, alpha, 0)
 
     # 3. Create anomaly region highlight
-    mask = (anomaly_map_resized > threshold).astype(np.uint8)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # threshold를 점수 기반으로 설정 (상위 영역만 표시)
+    map_threshold = score_threshold / global_max  # normalized threshold
+    mask = (anomaly_map_norm > map_threshold).astype(np.uint8)
 
     highlight = original.copy()
-    cv2.drawContours(highlight, contours, -1, (0, 0, 255), 2)  # Red contours
 
-    # Fill anomaly regions with semi-transparent red
-    red_overlay = original.copy()
-    red_overlay[mask == 1] = [0, 0, 255]
-    highlight = cv2.addWeighted(highlight, 0.7, red_overlay, 0.3, 0)
+    if is_anomaly and mask.sum() > 0:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(highlight, contours, -1, (0, 0, 255), 2)  # Red contours
 
-    # Add score text
-    cv2.putText(
-        overlay,
-        f"Score: {anomaly_score:.4f}",
-        (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (255, 255, 255),
-        2,
-    )
-    cv2.putText(
-        highlight,
-        f"Score: {anomaly_score:.4f}",
-        (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (255, 255, 255),
-        2,
-    )
+        # Fill anomaly regions with semi-transparent red
+        red_overlay = original.copy()
+        red_overlay[mask == 1] = [0, 0, 255]
+        highlight = cv2.addWeighted(highlight, 0.7, red_overlay, 0.3, 0)
+
+    # Add score text and label
+    label = "ANOMALY" if is_anomaly else "NORMAL"
+    color = (0, 0, 255) if is_anomaly else (0, 255, 0)
+
+    for img in [overlay, highlight]:
+        cv2.putText(img, f"Score: {anomaly_score:.4f}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(img, label, (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
     # Create output paths (preserve directory structure)
     rel_dir = Path(image_path).parent
@@ -170,7 +173,13 @@ def parse_args():
     parser.add_argument(
         "--save-visualizations",
         action="store_true",
-        help="Save heatmap and overlay visualizations",
+        help="Save heatmap and overlay visualizations (all images)",
+    )
+    parser.add_argument(
+        "--save-visualizations-partial",
+        type=float,
+        default=None,
+        help="Save visualizations for random subset (0.0-1.0, e.g., 0.1 for 10%%)",
     )
     parser.add_argument(
         "--vis-dir",
@@ -248,7 +257,7 @@ def process_batch(
     maps = maps.cpu().numpy()
 
     results = []
-    anomaly_maps_norm = []
+    anomaly_maps_raw = []  # Raw maps for visualization
 
     for i in range(len(scores)):
         anomaly_map = maps[i]
@@ -259,9 +268,11 @@ def process_batch(
         raw_mean = float(anomaly_map.mean())
         raw_std = float(anomaly_map.std())
 
-        # Normalize map for visualization (0-1)
+        # Store raw map for visualization
+        anomaly_maps_raw.append(anomaly_map.copy())
+
+        # Normalize map for defect location computation
         anomaly_map_norm = normalize_anomaly_map(anomaly_map)
-        anomaly_maps_norm.append(anomaly_map_norm)
 
         # is_anomaly는 raw score 기준으로 판단 (threshold는 나중에 조정 가능)
         is_anomaly = score > score_threshold
@@ -285,7 +296,7 @@ def process_batch(
 
         results.append(result)
 
-    return results, anomaly_maps_norm
+    return results, anomaly_maps_raw
 
 
 def main():
@@ -317,10 +328,20 @@ def main():
 
     # Visualization settings
     save_vis = args.save_visualizations
+    save_vis_partial = args.save_visualizations_partial
+    vis_ratio = 1.0  # default: save all
+
+    if save_vis_partial is not None:
+        save_vis = True
+        vis_ratio = max(0.0, min(1.0, save_vis_partial))  # clamp to 0-1
+
     if save_vis:
         vis_dir = Path(args.vis_dir) if args.vis_dir else output_path.parent / "visualizations"
         vis_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Saving visualizations to: {vis_dir}")
+        if vis_ratio < 1.0:
+            print(f"Saving visualizations to: {vis_dir} (random {vis_ratio*100:.0f}%)")
+        else:
+            print(f"Saving visualizations to: {vis_dir}")
     else:
         vis_dir = None
 
@@ -450,16 +471,18 @@ def main():
                     results.append(result)
                     processed += 1
 
-                    # Save visualizations if enabled
+                    # Save visualizations if enabled (with random sampling)
                     if save_vis and vis_dir:
-                        save_visualization(
-                            image_path=image_path,
-                            anomaly_map=batch_maps[i],
-                            anomaly_score=result["anomaly_score"],
-                            data_root=data_root,
-                            vis_dir=vis_dir,
-                            threshold=0.5,  # visualization용 threshold
-                        )
+                        if vis_ratio >= 1.0 or np.random.random() < vis_ratio:
+                            save_visualization(
+                                image_path=image_path,
+                                anomaly_map=batch_maps[i],
+                                anomaly_score=result["anomaly_score"],
+                                data_root=data_root,
+                                vis_dir=vis_dir,
+                                score_threshold=threshold,
+                                global_max=threshold * 2,  # 2x threshold를 max로 사용
+                            )
 
             except Exception as e:
                 print(f"\nError: {e}")

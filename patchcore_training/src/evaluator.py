@@ -1,5 +1,6 @@
 """PatchCore evaluator module."""
 
+import csv
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -106,12 +107,16 @@ class PatchCoreEvaluator:
         all_labels = []
         all_maps = []
         all_masks = []
+        all_paths = []
+        all_defect_types = []
 
         with torch.no_grad():
             for batch in tqdm(dataloader, desc=f"  {dataset_name}/{category}", leave=False, mininterval=1.0):
                 images = batch["image"].to(self.device)
                 labels = batch["label"].numpy()
                 masks = batch["mask"].numpy()
+                paths = batch["image_path"]
+                defect_types = batch["defect_type"]
 
                 scores, maps = model.predict(images)
 
@@ -119,12 +124,24 @@ class PatchCoreEvaluator:
                 all_labels.append(labels)
                 all_maps.append(maps.cpu().numpy())
                 all_masks.append(masks)
+                all_paths.extend(paths)
+                all_defect_types.extend(defect_types)
 
         # Concatenate results
         all_scores = np.concatenate(all_scores)
         all_labels = np.concatenate(all_labels)
         all_maps = np.concatenate(all_maps)
         all_masks = np.concatenate(all_masks).squeeze(1)  # Remove channel dim
+
+        # Store predictions for CSV export
+        self._last_predictions = {
+            "paths": all_paths,
+            "scores": all_scores,
+            "labels": all_labels,
+            "defect_types": all_defect_types,
+            "dataset": dataset_name,
+            "category": category,
+        }
 
         # Compute image-level metrics
         metrics = self._compute_image_metrics(all_scores, all_labels)
@@ -213,17 +230,20 @@ class PatchCoreEvaluator:
         self,
         models: Dict[str, PatchCore],
         verbose: bool = True,
+        save_predictions_csv: str = None,
     ) -> Dict[str, Dict]:
         """Evaluate all loaded models.
 
         Args:
             models: Dictionary mapping "dataset/category" to models
             verbose: Print progress
+            save_predictions_csv: Path to save per-sample predictions CSV
 
         Returns:
             Dictionary mapping "dataset/category" to metrics
         """
         results = {}
+        all_predictions = []  # For CSV export
         total = len(models)
 
         print(f"\nEvaluating {total} models")
@@ -244,9 +264,30 @@ class PatchCoreEvaluator:
 
             results[key] = metrics
 
+            # Collect predictions for CSV
+            if hasattr(self, '_last_predictions') and self._last_predictions:
+                pred = self._last_predictions
+                scores_norm = (pred["scores"] - pred["scores"].min()) / (pred["scores"].max() - pred["scores"].min() + 1e-8)
+                for i in range(len(pred["paths"])):
+                    all_predictions.append({
+                        "image_path": pred["paths"][i],
+                        "dataset": pred["dataset"],
+                        "category": pred["category"],
+                        "defect_type": pred["defect_types"][i],
+                        "gt_label": int(pred["labels"][i]),  # 0=normal, 1=anomaly
+                        "anomaly_score": float(pred["scores"][i]),
+                        "score_normalized": float(scores_norm[i]),
+                        "pred_label": int(scores_norm[i] > self.threshold),
+                        "correct": int(pred["labels"][i]) == int(scores_norm[i] > self.threshold),
+                    })
+
             # Show AUROC in progress bar
             auroc = metrics.get('image_auroc', 0)
             pbar.set_postfix({"AUROC": f"{auroc:.4f}"})
+
+        # Save predictions CSV
+        if save_predictions_csv and all_predictions:
+            self._save_predictions_csv(all_predictions, save_predictions_csv)
 
         # Compute average metrics
         if results:
@@ -262,6 +303,28 @@ class PatchCoreEvaluator:
             print(f"{'='*60}")
 
         return results
+
+    def _save_predictions_csv(self, predictions: List[Dict], output_path: str) -> None:
+        """Save per-sample predictions to CSV.
+
+        Args:
+            predictions: List of prediction dictionaries
+            output_path: Output CSV path
+        """
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        fieldnames = [
+            "image_path", "dataset", "category", "defect_type",
+            "gt_label", "anomaly_score", "score_normalized", "pred_label", "correct"
+        ]
+
+        with open(output_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(predictions)
+
+        print(f"Predictions saved to: {output_path}")
 
     def _compute_average_metrics(self, results: Dict[str, Dict]) -> Dict:
         """Compute average metrics across all categories.

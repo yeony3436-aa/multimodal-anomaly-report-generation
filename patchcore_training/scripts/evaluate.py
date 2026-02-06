@@ -57,6 +57,12 @@ def parse_args():
         help="Output path for results JSON",
     )
     parser.add_argument(
+        "--save-csv",
+        type=str,
+        default=None,
+        help="Output path for per-sample predictions CSV",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -107,7 +113,7 @@ def main():
             models = {k: v for k, v in models.items() if k.startswith(args.dataset + "/")}
 
         # Evaluate all
-        results = evaluator.evaluate_all(models)
+        results = evaluator.evaluate_all(models, save_predictions_csv=args.save_csv)
 
     # Save results if output path specified
     if args.output:
