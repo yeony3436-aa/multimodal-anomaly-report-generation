@@ -274,12 +274,22 @@ def process_batch(
         # Normalize map for defect location computation
         anomaly_map_norm = normalize_anomaly_map(anomaly_map)
 
-        # is_anomaly는 raw score 기준으로 판단 (threshold는 나중에 조정 가능)
+        # is_anomaly는 raw score 기준으로 판단
         is_anomaly = score > score_threshold
 
-        # Defect location은 normalized map에서 상위 영역 찾기
-        # threshold를 높게 설정 (0.7)해서 확실한 영역만 검출
-        location_info = compute_defect_location(anomaly_map_norm, 0.7)
+        # Defect location은 is_anomaly일 때만 계산
+        if is_anomaly:
+            # normalized map에서 상위 영역 찾기 (threshold 0.7)
+            location_info = compute_defect_location(anomaly_map_norm, 0.7)
+        else:
+            # 정상이면 defect 정보 없음
+            location_info = {
+                "has_defect": False,
+                "region": "none",
+                "bbox": None,
+                "center": None,
+                "area_ratio": 0.0,
+            }
 
         result = {
             "anomaly_score": round(score, 6),
@@ -290,7 +300,6 @@ def process_batch(
                 "raw_max": round(raw_max, 4),
                 "raw_mean": round(raw_mean, 4),
                 "raw_std": round(raw_std, 4),
-                "norm_max": round(float(anomaly_map_norm.max()), 4),
             },
         }
 
