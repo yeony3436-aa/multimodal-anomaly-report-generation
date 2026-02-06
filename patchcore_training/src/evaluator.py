@@ -68,6 +68,7 @@ class PatchCoreEvaluator:
         dataset_name: str,
         category: str,
         verbose: bool = True,
+        threshold: float = None,
     ) -> Dict:
         """Evaluate model on a single category.
 
@@ -76,12 +77,16 @@ class PatchCoreEvaluator:
             dataset_name: Dataset name
             category: Category name
             verbose: Print progress
+            threshold: Optional category-specific threshold (overrides self.threshold)
 
         Returns:
             Dictionary with evaluation metrics
         """
+        # Use provided threshold or fall back to self.threshold
+        eval_threshold = threshold if threshold is not None else self.threshold
+
         if verbose:
-            print(f"\nEvaluating: {dataset_name}/{category}")
+            print(f"\nEvaluating: {dataset_name}/{category} (threshold={eval_threshold:.4f})")
 
         model.to(self.device)
         model.eval()
@@ -144,12 +149,14 @@ class PatchCoreEvaluator:
         }
 
         # Compute image-level metrics
-        metrics = self._compute_image_metrics(all_scores, all_labels)
+        metrics = self._compute_image_metrics(all_scores, all_labels, eval_threshold)
 
         # Compute pixel-level metrics if masks available
         if all_masks.max() > 0:
-            pixel_metrics = self._compute_pixel_metrics(all_maps, all_masks)
+            pixel_metrics = self._compute_pixel_metrics(all_maps, all_masks, eval_threshold)
             metrics.update(pixel_metrics)
+
+        metrics["threshold_used"] = eval_threshold
 
         metrics["n_samples"] = len(all_labels)
         metrics["n_anomaly"] = int(all_labels.sum())
@@ -167,19 +174,21 @@ class PatchCoreEvaluator:
         self,
         scores: np.ndarray,
         labels: np.ndarray,
+        threshold: float = None,
     ) -> Dict:
         """Compute image-level metrics.
 
         Args:
             scores: Anomaly scores (N,)
             labels: Ground truth labels (N,)
+            threshold: Threshold for binary classification (raw score, not normalized)
 
         Returns:
             Dictionary with metrics
         """
-        # Normalize scores to [0, 1] for threshold-based metrics
-        scores_norm = (scores - scores.min()) / (scores.max() - scores.min() + 1e-8)
-        preds = (scores_norm > self.threshold).astype(int)
+        # Use raw score threshold (not normalized)
+        eval_threshold = threshold if threshold is not None else self.threshold
+        preds = (scores > eval_threshold).astype(int)
 
         metrics = {
             "image_auroc": roc_auc_score(labels, scores) if len(np.unique(labels)) > 1 else 0.0,
@@ -195,12 +204,14 @@ class PatchCoreEvaluator:
         self,
         maps: np.ndarray,
         masks: np.ndarray,
+        threshold: float = None,
     ) -> Dict:
         """Compute pixel-level metrics.
 
         Args:
             maps: Anomaly maps (N, H, W)
             masks: Ground truth masks (N, H, W)
+            threshold: Raw score threshold (will be normalized for pixel-level)
 
         Returns:
             Dictionary with pixel metrics
@@ -213,9 +224,11 @@ class PatchCoreEvaluator:
         if len(np.unique(masks_flat)) < 2:
             return {}
 
-        # Normalize maps
+        # For pixel-level, normalize maps and threshold
+        # Use 0.5 as default normalized threshold for pixel metrics
         maps_norm = (maps_flat - maps_flat.min()) / (maps_flat.max() - maps_flat.min() + 1e-8)
-        preds_flat = (maps_norm > self.threshold).astype(int)
+        pixel_threshold = 0.5  # Fixed normalized threshold for pixel-level
+        preds_flat = (maps_norm > pixel_threshold).astype(int)
 
         metrics = {
             "pixel_auroc": roc_auc_score(masks_flat, maps_flat),
@@ -231,6 +244,7 @@ class PatchCoreEvaluator:
         models: Dict[str, PatchCore],
         verbose: bool = True,
         save_predictions_csv: str = None,
+        per_category_thresholds: Dict[str, float] = None,
     ) -> Dict[str, Dict]:
         """Evaluate all loaded models.
 
@@ -238,6 +252,7 @@ class PatchCoreEvaluator:
             models: Dictionary mapping "dataset/category" to models
             verbose: Print progress
             save_predictions_csv: Path to save per-sample predictions CSV
+            per_category_thresholds: Optional dict mapping "dataset/category" to threshold
 
         Returns:
             Dictionary mapping "dataset/category" to metrics
@@ -246,10 +261,18 @@ class PatchCoreEvaluator:
         all_predictions = []  # For CSV export
         total = len(models)
 
-        print(f"\nEvaluating {total} models")
+        if per_category_thresholds:
+            print(f"\nEvaluating {total} models with per-category thresholds")
+        else:
+            print(f"\nEvaluating {total} models (threshold={self.threshold})")
 
         pbar = tqdm(models.items(), desc="Evaluating", total=total)
         for key, model in pbar:
+            # Get category-specific threshold if available
+            category_threshold = None
+            if per_category_thresholds:
+                category_threshold = per_category_thresholds.get(key)
+
             pbar.set_description(f"Evaluating {key}")
 
             parts = key.split("/")
@@ -260,6 +283,7 @@ class PatchCoreEvaluator:
                 dataset_name=dataset_name,
                 category=category,
                 verbose=False,  # Suppress individual category output for cleaner progress
+                threshold=category_threshold,
             )
 
             results[key] = metrics
@@ -267,18 +291,21 @@ class PatchCoreEvaluator:
             # Collect predictions for CSV
             if hasattr(self, '_last_predictions') and self._last_predictions:
                 pred = self._last_predictions
-                scores_norm = (pred["scores"] - pred["scores"].min()) / (pred["scores"].max() - pred["scores"].min() + 1e-8)
+                # Use the threshold that was actually used for this category
+                used_threshold = metrics.get("threshold_used", self.threshold)
                 for i in range(len(pred["paths"])):
+                    score = float(pred["scores"][i])
+                    pred_label = int(score > used_threshold)
                     all_predictions.append({
                         "image_path": pred["paths"][i],
                         "dataset": pred["dataset"],
                         "category": pred["category"],
                         "defect_type": pred["defect_types"][i],
                         "gt_label": int(pred["labels"][i]),  # 0=normal, 1=anomaly
-                        "anomaly_score": float(pred["scores"][i]),
-                        "score_normalized": float(scores_norm[i]),
-                        "pred_label": int(scores_norm[i] > self.threshold),
-                        "correct": int(pred["labels"][i]) == int(scores_norm[i] > self.threshold),
+                        "anomaly_score": score,
+                        "threshold_used": used_threshold,
+                        "pred_label": pred_label,
+                        "correct": int(pred["labels"][i]) == pred_label,
                     })
 
             # Show AUROC in progress bar
@@ -316,7 +343,7 @@ class PatchCoreEvaluator:
 
         fieldnames = [
             "image_path", "dataset", "category", "defect_type",
-            "gt_label", "anomaly_score", "score_normalized", "pred_label", "correct"
+            "gt_label", "anomaly_score", "threshold_used", "pred_label", "correct"
         ]
 
         with open(output_path, "w", newline="", encoding="utf-8") as f:

@@ -168,7 +168,13 @@ def parse_args():
         "--threshold",
         type=float,
         default=None,
-        help="Anomaly score threshold (overrides config). Use score statistics to tune.",
+        help="Global anomaly score threshold (overrides config). Ignored if --thresholds is used.",
+    )
+    parser.add_argument(
+        "--thresholds",
+        type=str,
+        default=None,
+        help="Path to per-category thresholds YAML file (e.g., config/thresholds.yaml)",
     )
     parser.add_argument(
         "--save-visualizations",
@@ -327,13 +333,30 @@ def main():
     mmad_json_path = Path(config["data"]["mmad_json"])
     output_path = Path(args.output or config["output"]["inference_output"])
 
-    # Threshold (command line > config > default)
-    if args.threshold is not None:
-        threshold = args.threshold
-    else:
-        threshold = config.get("evaluation", {}).get("threshold", 0.5)
+    # Threshold settings
+    # Per-category thresholds (if provided) > global threshold > config > default
+    per_category_thresholds = {}
+    global_threshold = config.get("evaluation", {}).get("threshold", 0.5)
 
-    print(f"Anomaly score threshold: {threshold}")
+    if args.thresholds:
+        # Load per-category thresholds from YAML
+        import yaml
+        thresholds_path = Path(args.thresholds)
+        if thresholds_path.exists():
+            with open(thresholds_path, "r", encoding="utf-8") as f:
+                thresholds_config = yaml.safe_load(f)
+            global_threshold = thresholds_config.get("global", global_threshold)
+            per_category_thresholds = thresholds_config.get("categories", {})
+            print(f"Loaded per-category thresholds from: {thresholds_path}")
+            print(f"  Global fallback: {global_threshold}")
+            print(f"  Categories: {len(per_category_thresholds)}")
+        else:
+            print(f"Warning: Thresholds file not found: {thresholds_path}")
+    elif args.threshold is not None:
+        global_threshold = args.threshold
+        print(f"Using global threshold: {global_threshold}")
+    else:
+        print(f"Using default threshold: {global_threshold}")
 
     # Visualization settings
     save_vis = args.save_visualizations
@@ -423,7 +446,10 @@ def main():
         model = models[category_key]
         dataset_name, category = category_key.split("/")
 
-        category_pbar.set_description(f"Processing {category_key}")
+        # Get category-specific threshold (or fallback to global)
+        category_threshold = per_category_thresholds.get(category_key, global_threshold)
+
+        category_pbar.set_description(f"Processing {category_key} (thr={category_threshold:.2f})")
 
         # Create dataset and dataloader
         dataset = InferenceDataset(
@@ -464,7 +490,7 @@ def main():
                     model=model,
                     images=images,
                     original_sizes=original_sizes,
-                    score_threshold=threshold,
+                    score_threshold=category_threshold,
                     device=device,
                 )
 
@@ -489,8 +515,8 @@ def main():
                                 anomaly_score=result["anomaly_score"],
                                 data_root=data_root,
                                 vis_dir=vis_dir,
-                                score_threshold=threshold,
-                                global_max=threshold * 2,  # 2x threshold를 max로 사용
+                                score_threshold=category_threshold,
+                                global_max=category_threshold * 2,  # 2x threshold를 max로 사용
                             )
 
             except Exception as e:

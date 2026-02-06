@@ -68,6 +68,12 @@ def parse_args():
         default=42,
         help="Random seed",
     )
+    parser.add_argument(
+        "--thresholds",
+        type=str,
+        default=None,
+        help="Path to per-category thresholds YAML file (e.g., config/thresholds.yaml)",
+    )
 
     return parser.parse_args()
 
@@ -82,6 +88,25 @@ def main():
     print(f"Loading config from: {args.config}")
     config = load_config(args.config)
 
+    # Load per-category thresholds if provided
+    per_category_thresholds = None
+    if args.thresholds:
+        import yaml
+        from pathlib import Path
+        thresholds_path = Path(args.thresholds)
+        if thresholds_path.exists():
+            with open(thresholds_path, "r", encoding="utf-8") as f:
+                thresholds_config = yaml.safe_load(f)
+            global_threshold = thresholds_config.get("global", 0.5)
+            per_category_thresholds = thresholds_config.get("categories", {})
+            # Update evaluator's default threshold
+            config.setdefault("evaluation", {})["threshold"] = global_threshold
+            print(f"Loaded per-category thresholds from: {thresholds_path}")
+            print(f"  Global fallback: {global_threshold}")
+            print(f"  Categories: {len(per_category_thresholds)}")
+        else:
+            print(f"Warning: Thresholds file not found: {thresholds_path}")
+
     # Create trainer and evaluator
     trainer = PatchCoreTrainer(config)
     evaluator = PatchCoreEvaluator(config)
@@ -89,18 +114,25 @@ def main():
     # Evaluate
     if args.dataset and args.category:
         # Evaluate single category
-        print(f"\nEvaluating: {args.dataset}/{args.category}")
+        category_key = f"{args.dataset}/{args.category}"
+        print(f"\nEvaluating: {category_key}")
         model = trainer.load_model(args.dataset, args.category)
         if model is None:
-            print(f"Model not found for {args.dataset}/{args.category}")
+            print(f"Model not found for {category_key}")
             return
+
+        # Get category-specific threshold if available
+        category_threshold = None
+        if per_category_thresholds:
+            category_threshold = per_category_thresholds.get(category_key)
 
         metrics = evaluator.evaluate_category(
             model=model,
             dataset_name=args.dataset,
             category=args.category,
+            threshold=category_threshold,
         )
-        results = {f"{args.dataset}/{args.category}": metrics}
+        results = {category_key: metrics}
     else:
         # Load all models
         models = trainer.load_all_models()
@@ -113,7 +145,11 @@ def main():
             models = {k: v for k, v in models.items() if k.startswith(args.dataset + "/")}
 
         # Evaluate all
-        results = evaluator.evaluate_all(models, save_predictions_csv=args.save_csv)
+        results = evaluator.evaluate_all(
+            models,
+            save_predictions_csv=args.save_csv,
+            per_category_thresholds=per_category_thresholds,
+        )
 
     # Save results if output path specified
     if args.output:
