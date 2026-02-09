@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import torch
 
-from .base import BaseLLMClient, INSTRUCTION
+from .base import BaseLLMClient, INSTRUCTION, INSTRUCTION_WITH_AD, format_ad_info
 
 logger = logging.getLogger(__name__)
 
@@ -113,20 +113,29 @@ class LLaVAClient(BaseLLMClient):
         query_image_path: str,
         few_shot_paths: List[str],
         questions: List[Dict[str, str]],
+        ad_info: Optional[Dict] = None,
     ) -> dict:
         """Build LLaVA message format."""
         return {
             "query_image": query_image_path,
             "few_shot_paths": few_shot_paths,
             "questions": questions,
+            "ad_info": ad_info,
         }
 
     def _generate_hf(self, payload: dict) -> str:
         """Generate response using HuggingFace transformers."""
         from PIL import Image
 
+        # Select instruction based on AD info availability
+        ad_info = payload.get("ad_info")
+        if ad_info:
+            instruction = INSTRUCTION_WITH_AD.format(ad_info=format_ad_info(ad_info))
+        else:
+            instruction = INSTRUCTION
+
         # Build prompt
-        prompt = f"USER: {INSTRUCTION}\n"
+        prompt = f"USER: {instruction}\n"
 
         if payload["few_shot_paths"]:
             prompt += f"Following is {len(payload['few_shot_paths'])} image of normal sample:\n"
@@ -181,8 +190,12 @@ class LLaVAClient(BaseLLMClient):
         except ImportError:
             raise ImportError("Please install llava package")
 
-        # Build prompt
-        hint = INSTRUCTION
+        # Select instruction based on AD info availability
+        ad_info = payload.get("ad_info")
+        if ad_info:
+            hint = INSTRUCTION_WITH_AD.format(ad_info=format_ad_info(ad_info))
+        else:
+            hint = INSTRUCTION
 
         question = ""
         if payload["few_shot_paths"]:
@@ -264,6 +277,7 @@ class LLaVAClient(BaseLLMClient):
         query_image_path: str,
         meta: dict,
         few_shot_paths: List[str],
+        ad_info: Optional[Dict] = None,
     ) -> Tuple[List[Dict], List[str], Optional[List[str]], List[str]]:
         """Generate answers one question at a time."""
         questions, answers, question_types = self.parse_conversation(meta)
@@ -275,7 +289,7 @@ class LLaVAClient(BaseLLMClient):
 
         for i in range(len(questions)):
             part_questions = questions[i:i + 1]
-            payload = self.build_payload(query_image_path, few_shot_paths, part_questions)
+            payload = self.build_payload(query_image_path, few_shot_paths, part_questions, ad_info=ad_info)
 
             response = self.send_request(payload)
             if response is None:
@@ -295,3 +309,35 @@ class LLaVAClient(BaseLLMClient):
                 predicted_answers.append('')
 
         return questions, answers, predicted_answers, question_types
+
+    def generate_answers_batch(
+        self,
+        query_image_path: str,
+        meta: dict,
+        few_shot_paths: List[str],
+        ad_info: Optional[Dict] = None,
+    ) -> Tuple[List[Dict], List[str], Optional[List[str]], List[str]]:
+        """Generate answers for ALL questions in a single model call (5-8x faster)."""
+        questions, answers, question_types = self.parse_conversation(meta)
+
+        if not questions or not answers:
+            return questions, answers, None, question_types
+
+        # Build payload with ALL questions at once
+        payload = self.build_payload(query_image_path, few_shot_paths, questions, ad_info=ad_info)
+
+        # Single model call for all questions
+        response = self.send_request(payload)
+        if response is None:
+            return questions, answers, None, question_types
+
+        response_text = self.extract_response_text(response)
+
+        # Parse all answers from response
+        parsed = self.parse_answer(response_text)
+
+        # Pad with empty strings if not enough answers
+        while len(parsed) < len(questions):
+            parsed.append('')
+
+        return questions, answers, parsed[:len(questions)], question_types

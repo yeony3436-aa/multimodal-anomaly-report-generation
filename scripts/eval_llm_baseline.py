@@ -9,23 +9,38 @@ Supports two modes:
 1. Paper baseline (without AD model): Image + prompt → LLM
 2. With AD model: AD model output (heatmap/bbox) + Image + prompt → LLM
 
+Performance Optimizations (v2):
+- API models: Batch mode by default (1 API call per image, 5-8x faster)
+- Local models: Incremental mode by default (better accuracy)
+- Parallel workers: Multiple concurrent API calls (API models only)
+- Buffered I/O: Save every 50 images instead of every image
+
 Usage:
-    # === API Models (GPT-4o, Claude) ===
-    python scripts/eval_llm_baseline.py --model gpt-4o --few-shot 1 --similar-template --max-images 5
-    python scripts/eval_llm_baseline.py --model claude --few-shot 1 --similar-template --max-images 5
+    # === API Models (auto batch mode, fast) ===
+    python scripts/eval_llm_baseline.py --model gpt-4o --few-shot 1 --similar-template
+    python scripts/eval_llm_baseline.py --model claude --few-shot 1 --similar-template
+    python scripts/eval_llm_baseline.py --model gemini --few-shot 1 --similar-template
 
-    # === HuggingFace Models (Local GPU) ===
-    # Qwen2.5-VL
-    python scripts/eval_llm_baseline.py --model qwen --few-shot 1 --similar-template --max-images 5
+    # === With parallel workers (API models, 2-3x faster) ===
+    python scripts/eval_llm_baseline.py --model gpt-4o --parallel 3
 
-    # InternVL2
-    python scripts/eval_llm_baseline.py --model internvl --few-shot 1 --similar-template --max-images 5
+    # === Local Models (auto incremental mode, accurate) ===
+    python scripts/eval_llm_baseline.py --model qwen --few-shot 1 --similar-template
+    python scripts/eval_llm_baseline.py --model internvl --few-shot 1 --similar-template
+    python scripts/eval_llm_baseline.py --model llava --few-shot 1 --similar-template
 
-    # LLaVA
-    python scripts/eval_llm_baseline.py --model llava --few-shot 1 --similar-template --max-images 5
+    # === Force batch mode for local models (faster but less accurate) ===
+    python scripts/eval_llm_baseline.py --model llava --batch-mode
+
+    # === Quick experiments with sampling (10% stratified sample) ===
+    python scripts/eval_llm_baseline.py --model llava --sample-ratio 0.1
+    python scripts/eval_llm_baseline.py --model llava --sample-ratio 0.2 --sample-seed 123
 
     # === With Anomaly Detection Model ===
-    python scripts/eval_llm_baseline.py --model gpt-4o --with-ad --ad-output outputs/predictions.json
+    python scripts/eval_llm_baseline.py --model gpt-4o --with-ad --ad-output output/ad_predictions.json
+
+    # === Quick test ===
+    python scripts/eval_llm_baseline.py --model gpt-4o --max-images 10
 """
 from __future__ import annotations
 
@@ -54,14 +69,49 @@ def load_mmad_data(json_path: str) -> dict:
 
 
 def load_ad_predictions(ad_output_path: str) -> dict:
-    """Load anomaly detection model predictions."""
+    """Load anomaly detection model predictions.
+
+    Supports multiple JSON formats:
+    1. List format: [{"image_path": "...", ...}, ...]
+    2. Dict format with image paths as keys: {"path/to/image.jpg": {...}, ...}
+    3. Dict format with "predictions" key: {"predictions": [...]}
+
+    Returns:
+        Dictionary indexed by image relative path (e.g., "GoodsAD/cigarette_box/test/bad/001.jpg")
+    """
     with open(ad_output_path, "r", encoding="utf-8") as f:
         predictions = json.load(f)
 
-    # Index by image path
+    # Handle different formats
     if isinstance(predictions, list):
-        return {p["image_path"]: p for p in predictions}
+        # List format - index by image_path
+        indexed = {}
+        for p in predictions:
+            # Try common key names for image path
+            img_key = p.get("image_path") or p.get("image") or p.get("img_path") or p.get("path")
+            if img_key:
+                # Normalize path (remove leading ./ or data_root prefix if present)
+                img_key = img_key.lstrip("./")
+                indexed[img_key] = p
+        return indexed
+    elif isinstance(predictions, dict):
+        # Check if it has a "predictions" key
+        if "predictions" in predictions:
+            return load_ad_predictions_from_list(predictions["predictions"])
+        # Already indexed by image path
+        return predictions
     return predictions
+
+
+def load_ad_predictions_from_list(predictions_list: list) -> dict:
+    """Helper to index predictions list by image path."""
+    indexed = {}
+    for p in predictions_list:
+        img_key = p.get("image_path") or p.get("image") or p.get("img_path") or p.get("path")
+        if img_key:
+            img_key = img_key.lstrip("./")
+            indexed[img_key] = p
+    return indexed
 
 
 def main():
@@ -86,8 +136,18 @@ def main():
                         help="Use similar templates instead of random")
     parser.add_argument("--max-images", type=int, default=None,
                         help="Max images to evaluate (for testing)")
+    parser.add_argument("--sample-ratio", type=float, default=None,
+                        help="Sample ratio (0.0-1.0) for quick experiments. E.g., 0.1 for 10%%. Uses stratified sampling by category.")
+    parser.add_argument("--sample-seed", type=int, default=42,
+                        help="Random seed for sampling (default: 42, for reproducibility)")
     parser.add_argument("--batch-mode", action="store_true",
-                        help="Ask all questions in one API call (faster but may be less accurate)")
+                        help="Ask all questions in one API call (faster, good for API models)")
+    parser.add_argument("--incremental-mode", action="store_true",
+                        help="Ask questions one by one (slower but more accurate, default for local models)")
+    parser.add_argument("--save-interval", type=int, default=50,
+                        help="Save results every N images (default: 50)")
+    parser.add_argument("--parallel", type=int, default=1,
+                        help="Number of parallel workers for API calls (default: 1, max: 5)")
 
     # Anomaly Detection model settings
     parser.add_argument("--with-ad", action="store_true",
@@ -99,7 +159,7 @@ def main():
                         help="How to present AD model output to LLM")
 
     # Output settings
-    parser.add_argument("--output-dir", type=str, default="outputs/eval",
+    parser.add_argument("--output-dir", type=str, default="output/eval",
                         help="Output directory for results")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from existing results file")
@@ -149,11 +209,32 @@ def main():
     print("=" * 60)
     print("MMAD LLM Evaluation")
     print("=" * 60)
+    # Determine batch mode
+    # - API models (GPT-4o, Claude, Gemini): batch mode by default (5-8x faster)
+    # - Local models (LLaVA, Qwen, InternVL): incremental mode by default (better accuracy)
+    # User can override with --batch-mode or --incremental-mode
+    model_info = MODEL_REGISTRY.get(args.model.lower(), {})
+    is_local_model = model_info.get("type") == "local"
+
+    if args.batch_mode and args.incremental_mode:
+        print("Warning: Both --batch-mode and --incremental-mode specified. Using incremental.")
+        use_batch_mode = False
+    elif args.batch_mode:
+        use_batch_mode = True
+    elif args.incremental_mode:
+        use_batch_mode = False
+    else:
+        # Auto-detect based on model type
+        use_batch_mode = not is_local_model  # API models use batch, local models use incremental
+
     print(f"Model: {args.model}")
     if args.model_path:
         print(f"Model path: {args.model_path}")
     print(f"Few-shot: {args.few_shot}")
     print(f"Template: {template_type}")
+    print(f"Mode: {'Batch (1 API call/image)' if use_batch_mode else 'Incremental (N API calls/image)'}")
+    print(f"Parallel workers: {args.parallel}")
+    print(f"Save interval: {args.save_interval} images")
     print(f"With AD: {args.with_ad}")
     print(f"Data root: {data_root}")
     print(f"MMAD JSON: {mmad_json}")
@@ -190,11 +271,42 @@ def main():
     # Load dataset
     mmad_data = load_mmad_data(mmad_json)
     image_paths = list(mmad_data.keys())
+    total_available = len(image_paths)
+
+    # Stratified sampling by category (for quick experiments)
+    if args.sample_ratio is not None:
+        import random
+        from collections import defaultdict
+
+        random.seed(args.sample_seed)
+        ratio = max(0.0, min(1.0, args.sample_ratio))
+
+        # Group images by category (dataset/class)
+        images_by_category = defaultdict(list)
+        for img_path in image_paths:
+            parts = img_path.split("/")
+            if len(parts) >= 2:
+                category = f"{parts[0]}/{parts[1]}"
+            else:
+                category = "unknown"
+            images_by_category[category].append(img_path)
+
+        # Sample from each category proportionally
+        sampled_paths = []
+        for category, paths in images_by_category.items():
+            n_sample = max(1, int(len(paths) * ratio))  # At least 1 per category
+            sampled = random.sample(paths, min(n_sample, len(paths)))
+            sampled_paths.extend(sampled)
+
+        random.shuffle(sampled_paths)  # Shuffle to mix categories
+        image_paths = sampled_paths
+        print(f"Stratified sampling: {ratio*100:.0f}% from {len(images_by_category)} categories")
+        print(f"  Total: {total_available} -> Sampled: {len(image_paths)}")
 
     if args.max_images:
         image_paths = image_paths[:args.max_images]
 
-    print(f"Total images: {len(image_paths)}")
+    print(f"Images to evaluate: {len(image_paths)}")
     print()
 
     # Track statistics
@@ -202,13 +314,10 @@ def main():
     total_questions = 0
     processed = 0
     errors = 0
+    last_save = 0
 
-    # Evaluate with progress bar
-    pbar = tqdm(image_paths, desc="Evaluating", ncols=100)
-    for image_rel in pbar:
-        if image_rel in existing_images:
-            continue
-
+    def process_single_image(image_rel):
+        """Process a single image and return results."""
         meta = mmad_data[image_rel]
 
         # Get templates
@@ -223,48 +332,123 @@ def main():
 
         # Check if image exists
         if not Path(query_image_path).exists():
-            errors += 1
-            continue
+            return None, "not_found"
+
+        # Get AD prediction for this image if available
+        ad_info = None
+        if ad_predictions is not None:
+            ad_info = ad_predictions.get(image_rel)
+            if ad_info is None:
+                normalized_path = image_rel.replace("\\", "/")
+                ad_info = ad_predictions.get(normalized_path)
 
         # Generate answers
-        if args.batch_mode:
+        if use_batch_mode:
             questions, answers, predicted, q_types = llm_client.generate_answers_batch(
-                query_image_path, meta, few_shot_paths
+                query_image_path, meta, few_shot_paths, ad_info=ad_info
             )
         else:
             questions, answers, predicted, q_types = llm_client.generate_answers(
-                query_image_path, meta, few_shot_paths
+                query_image_path, meta, few_shot_paths, ad_info=ad_info
             )
 
         if predicted is None or len(predicted) != len(answers):
-            errors += 1
-            continue
+            return None, "failed"
 
-        # Calculate accuracy for this image
-        correct = sum(1 for p, a in zip(predicted, answers) if p == a)
-        total_correct += correct
-        total_questions += len(answers)
-        processed += 1
+        return {
+            "image_rel": image_rel,
+            "questions": questions,
+            "answers": answers,
+            "predicted": predicted,
+            "q_types": q_types
+        }, "success"
 
-        # Update progress bar with running accuracy
-        running_acc = total_correct / total_questions if total_questions > 0 else 0
-        pbar.set_postfix({"acc": f"{running_acc:.1%}", "done": processed, "err": errors}, refresh=False)
+    # Filter images to process
+    images_to_process = [img for img in image_paths if img not in existing_images]
+    print(f"Images to process: {len(images_to_process)} (skipping {len(existing_images)} existing)")
 
-        # Store results
-        for q, a, pred, qt in zip(questions, answers, predicted, q_types):
-            all_answers.append({
-                "image": image_rel,
-                "question": q,
-                "question_type": qt,
-                "correct_answer": a,
-                "gpt_answer": pred
-            })
+    # Parallel or sequential processing
+    if args.parallel > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # Save incrementally
-        with open(answers_json_path, "w", encoding="utf-8") as f:
-            json.dump(all_answers, f, indent=4, ensure_ascii=False)
+        num_workers = min(args.parallel, 5)  # Cap at 5 workers
+        print(f"Using {num_workers} parallel workers")
 
-    pbar.close()
+        pbar = tqdm(total=len(images_to_process), desc="Evaluating", ncols=100)
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(process_single_image, img): img for img in images_to_process}
+
+            for future in as_completed(futures):
+                result, status = future.result()
+
+                if status == "success" and result:
+                    correct = sum(1 for p, a in zip(result["predicted"], result["answers"]) if p == a)
+                    total_correct += correct
+                    total_questions += len(result["answers"])
+                    processed += 1
+
+                    for q, a, pred, qt in zip(result["questions"], result["answers"], result["predicted"], result["q_types"]):
+                        all_answers.append({
+                            "image": result["image_rel"],
+                            "question": q,
+                            "question_type": qt,
+                            "correct_answer": a,
+                            "gpt_answer": pred
+                        })
+                else:
+                    errors += 1
+
+                # Update progress bar
+                running_acc = total_correct / total_questions if total_questions > 0 else 0
+                pbar.update(1)
+                pbar.set_postfix({"acc": f"{running_acc:.1%}", "done": processed, "err": errors}, refresh=False)
+
+                # Save periodically
+                if processed - last_save >= args.save_interval:
+                    with open(answers_json_path, "w", encoding="utf-8") as f:
+                        json.dump(all_answers, f, indent=2, ensure_ascii=False)
+                    last_save = processed
+
+        pbar.close()
+    else:
+        # Sequential processing
+        pbar = tqdm(images_to_process, desc="Evaluating", ncols=100)
+        for image_rel in pbar:
+            result, status = process_single_image(image_rel)
+
+            if status == "success" and result:
+                correct = sum(1 for p, a in zip(result["predicted"], result["answers"]) if p == a)
+                total_correct += correct
+                total_questions += len(result["answers"])
+                processed += 1
+
+                for q, a, pred, qt in zip(result["questions"], result["answers"], result["predicted"], result["q_types"]):
+                    all_answers.append({
+                        "image": result["image_rel"],
+                        "question": q,
+                        "question_type": qt,
+                        "correct_answer": a,
+                        "gpt_answer": pred
+                    })
+            else:
+                errors += 1
+
+            # Update progress bar
+            running_acc = total_correct / total_questions if total_questions > 0 else 0
+            pbar.set_postfix({"acc": f"{running_acc:.1%}", "done": processed, "err": errors}, refresh=False)
+
+            # Save periodically (not every image!)
+            if processed - last_save >= args.save_interval:
+                with open(answers_json_path, "w", encoding="utf-8") as f:
+                    json.dump(all_answers, f, indent=2, ensure_ascii=False)
+                last_save = processed
+
+        pbar.close()
+
+    # Final save
+    with open(answers_json_path, "w", encoding="utf-8") as f:
+        json.dump(all_answers, f, indent=2, ensure_ascii=False)
 
     print()
     print("=" * 60)

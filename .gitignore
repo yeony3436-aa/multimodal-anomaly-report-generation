@@ -9,6 +9,8 @@ dataset/
 datasets/
 results/
 output/
+imagenette/
+pre_trained/
 
 # ===== Python =====
 __pycache__/
@@ -32,6 +34,7 @@ Thumbs.db
 # ===== Etc ====
 *.pt
 *.ckpt
+*.onnx
 *.log
 *.csv
 *.sqlite
