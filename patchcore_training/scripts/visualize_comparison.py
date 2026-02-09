@@ -319,11 +319,21 @@ def process_category(
 
         # Create combined grid (vertical stack)
         if comparison_images:
+            # Resize all images to same width
+            max_width = max(img.shape[1] for img in comparison_images)
+            resized_images = []
+            for img in comparison_images:
+                if img.shape[1] != max_width:
+                    scale = max_width / img.shape[1]
+                    new_h = int(img.shape[0] * scale)
+                    img = cv2.resize(img, (max_width, new_h))
+                resized_images.append(img)
+
             spacing = 10
             spaced_images = []
-            for img in comparison_images:
+            for img in resized_images:
                 spaced_images.append(img)
-                spaced_images.append(np.ones((spacing, img.shape[1], 3), dtype=np.uint8) * 50)
+                spaced_images.append(np.ones((spacing, max_width, 3), dtype=np.uint8) * 50)
 
             if spaced_images:
                 spaced_images = spaced_images[:-1]
