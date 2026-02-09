@@ -32,6 +32,11 @@ from src.utils.log import setup_logger
 from src.utils.device import get_device
 from src.datasets.dataloader import MMADLoader
 
+# PyTorch Lightning 내부 로그 억제 (GPU available, TPU available, Restoring states 등)
+import logging as _logging
+_logging.getLogger("pytorch_lightning").setLevel(_logging.WARNING)
+_logging.getLogger("lightning.pytorch").setLevel(_logging.WARNING)
+
 # Lazy Logger: 필요할 때만 생성
 _train_logger = None
 _inference_logger = None
@@ -39,13 +44,13 @@ _inference_logger = None
 def get_train_logger():
     global _train_logger
     if _train_logger is None:
-        _train_logger = setup_logger(name="TrainAnomalib", log_prefix="train_anomalib")
+        _train_logger = setup_logger(name="TrainAnomalib", log_prefix="train_anomalib", console_logging=False)
     return _train_logger
 
 def get_inference_logger():
     global _inference_logger
     if _inference_logger is None:
-        _inference_logger = setup_logger(name="InferenceAnomalib", log_prefix="inference_anomalib")
+        _inference_logger = setup_logger(name="InferenceAnomalib", log_prefix="inference_anomalib", console_logging=False)
     return _inference_logger
 
 class EpochProgressCallback(Callback):
@@ -128,8 +133,9 @@ class Anomalibs:
         self.output_config = self.config.get("output", {})
         self.engine_config = self.config.get("engine", {})
         self.device = get_device()
+        self.accelerator = self.engine_config.get("accelerator", "auto")
         self.loader = MMADLoader(config=self.config, model_name=self.model_name)
-        print(f"Anomalibs initialized - model: {self.model_name}, device: {self.device}")
+        print(f"[{self.model_name}] device: {self.device}, accelerator: {self.accelerator}")
 
     @staticmethod
     def cleanup_memory():
@@ -236,6 +242,12 @@ class Anomalibs:
                 # Early Stopping 설정 추출
                 es_config = self.training_config.get("early_stopping", {})
 
+                # 모델별 하이퍼파라미터 (yaml null이면 Anomalib default 사용)
+                model_hparams = {}
+                raw_model_params = self.config["anomaly"].get(self.model_name, {})
+                if self.model_name == "patchcore":
+                    model_hparams["coreset_sampling_ratio"] = raw_model_params.get("coreset_sampling_ratio") or 0.1
+
                 logger_config = WandbLogger(
                     project=wandb_config.get("project", "mmad-anomaly"),
                     name=run_name,
@@ -252,6 +264,7 @@ class Anomalibs:
                         "lr": lr,
                         "weight_decay": weight_decay,
                         "early_stopping_patience": es_config.get("patience", 10) if es_config.get("enabled") else None,
+                        **model_hparams,
                     },
                 )
 
@@ -353,7 +366,7 @@ class Anomalibs:
                 f"Early Stopping enabled: monitor={es_monitor}, "
                 f"patience={early_stop_config.get('patience')}, mode={es_mode}"
             )
-        elif early_stop_config.get("enabled", False) and self.model_name not in models_need_early_stopping:
+        elif early_stop_config.get("enabled", False) and self.model_name not in models_need_early_stopping and stage != "predict":
             get_train_logger().info(f"Early Stopping skipped: {self.model_name} doesn't need iterative training")
 
         kwargs = {
@@ -415,11 +428,10 @@ class Anomalibs:
         latest = self.get_latest_version(dataset, category)
 
         if create_new:
-            # 새 학습: 다음 버전 생성
+            # 새 학습: 다음 버전 경로 계산 (디렉토리 생성은 Anomalib Engine이 담당)
             new_version = 0 if latest is None else latest + 1
             version_dir = category_dir / f"v{new_version}"
-            version_dir.mkdir(parents=True, exist_ok=True)
-            get_train_logger().info(f"Created new version directory: {version_dir}")
+            get_train_logger().info(f"New version directory: {version_dir}")
             return version_dir
         else:
             # Resume: 최신 버전 사용
@@ -481,8 +493,6 @@ class Anomalibs:
             get_train_logger().info(f"{self.model_name} - no training required (zero-shot)")
             return self
 
-        get_train_logger().info(f"Fitting {self.model_name} - {dataset}/{category}")
-
         # --- Resume/Version 관리 ---
         resume_training = self.training_config.get("resume", False)
         ckpt_path_to_use = None
@@ -521,13 +531,9 @@ class Anomalibs:
         del datamodule
         self.cleanup_memory()
 
-        get_train_logger().info(f"Fitting {dataset}/{category} done")
         return self
 
-    def predict(self, dataset: str, category: str, save_json: bool = None, verbose: bool = True):
-        if verbose:
-            get_inference_logger().info(f"Predicting {self.model_name} - {dataset}/{category}")
-
+    def predict(self, dataset: str, category: str, save_json: bool = None):
         model = self.get_model()
         dm_kwargs = self.get_datamodule_kwargs()
         dm_kwargs["include_mask"] = True  # predict 시 GT mask 포함
@@ -551,8 +557,6 @@ class Anomalibs:
         if save_json:
             self.save_predictions_json(predictions, dataset, category)
 
-        if verbose:
-            get_inference_logger().info(f"Predicting {dataset}/{category} done - {len(predictions)} batches")
         return predictions
 
     def get_mask_path(self, image_path: str, dataset: str) -> str | None:
@@ -669,38 +673,34 @@ class Anomalibs:
     def fit_all(self):
         categories = self.get_all_categories()
         total = len(categories)
-        get_train_logger().info(f"Starting fit_all: {total} categories")
+        get_train_logger().info(f"fit_all: {total} categories")
 
         for idx, (dataset, category) in enumerate(categories, 1):
-            msg_start = f"[{idx}/{total}] Training: {dataset}/{category}..."
-            print(f"\n{msg_start}")
-            get_train_logger().info(msg_start)
+            print(f"\n[{idx}/{total}] Training: {dataset}/{category}...")
             start = time.time()
             self.fit(dataset, category)
             elapsed = time.time() - start
-            msg_done = f"[{idx}/{total}] {dataset}/{category} done ({elapsed:.1f}s)"
-            print(f"✓ {msg_done}")
-            get_train_logger().info(msg_done)
+            msg = f"[{idx}/{total}] {dataset}/{category} done ({elapsed:.1f}s)"
+            print(f"✓ {msg}")
+            get_train_logger().info(msg)
 
         get_train_logger().info(f"fit_all completed: {total} categories")
 
     def predict_all(self, save_json: bool = None):
         categories = self.get_trained_categories()
         total = len(categories)
-        get_inference_logger().info(f"Starting predict_all: {total} trained categories")
+        get_inference_logger().info(f"predict_all: {total} trained categories")
 
         all_predictions = {}
         for idx, (dataset, category) in enumerate(categories, 1):
-            msg_start = f"[{idx}/{total}] Inference: {dataset}/{category}..."
-            print(f"\n{msg_start}")
-            get_inference_logger().info(msg_start)
+            print(f"\n[{idx}/{total}] Predicting: {dataset}/{category}...")
             start = time.time()
             key = f"{dataset}/{category}"
             all_predictions[key] = self.predict(dataset, category, save_json)
             elapsed = time.time() - start
-            msg_done = f"[{idx}/{total}] {dataset}/{category} done ({elapsed:.1f}s)"
-            print(f"✓ {msg_done}")
-            get_inference_logger().info(msg_done)
+            msg = f"[{idx}/{total}] {dataset}/{category} done ({elapsed:.1f}s)"
+            print(f"✓ {msg}")
+            get_inference_logger().info(msg)
 
         get_inference_logger().info(f"predict_all completed: {total} categories")
         return all_predictions
