@@ -1,8 +1,8 @@
 // src/app/pages/ReportBuilderPage.tsx
-import React, { useState, useMemo } from "react";
+import React, { useMemo } from "react";
 import { Badge } from "../components/Badge";
 import { Download } from "lucide-react";
-import { AnomalyCase, packagingClasses } from "../data/mockData";
+import { AnomalyCase } from "../data/mockData";
 import {
   BarChart,
   Bar,
@@ -14,71 +14,16 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-
-function getDateRangeWindow(range: string, now = new Date()): { from: Date; to: Date } | null {
-  const todayStart = startOfDay(now);
-  const todayEnd = endOfDay(now);
-
-  if (range === "today") return { from: todayStart, to: todayEnd };
-
-  if (range === "yesterday") {
-    const y = new Date(todayStart);
-    y.setDate(y.getDate() - 1);
-    return { from: startOfDay(y), to: endOfDay(y) };
-  }
-
-  if (range === "week") {
-    const from = new Date(todayStart);
-    from.setDate(from.getDate() - 6);
-    return { from, to: todayEnd };
-  }
-
-  if (range === "month") {
-    const from = new Date(todayStart);
-    from.setDate(from.getDate() - 29);
-    return { from, to: todayEnd };
-  }
-
-  return null;
-}
-
 interface ReportBuilderPageProps {
-  cases: AnomalyCase[];
+  cases: AnomalyCase[]; // ✅ App.tsx에서 이미 필터 적용된 filteredCases가 들어옴
 }
 
 export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
-  const [reportPeriod, setReportPeriod] = useState("today");
-  const [selectedLine, setSelectedLine] = useState("all");
-  const [selectedGroup, setSelectedGroup] = useState("all");
-
   const reportMetrics = useMemo(() => {
-    const window = getDateRangeWindow(reportPeriod);
-
-    const filteredCases = cases.filter((c) => {
-      if (window) {
-        const t = c.timestamp.getTime();
-        if (t < window.from.getTime() || t > window.to.getTime()) return false;
-      }
-      if (selectedLine !== "all" && c.line_id !== selectedLine) return false;
-      if (selectedGroup !== "all" && c.product_group !== selectedGroup) return false;
-      return true;
-    });
-
-    const total = filteredCases.length;
-    const ngCount = filteredCases.filter((c) => c.decision === "NG").length;
-    const reviewCount = filteredCases.filter((c) => c.decision === "REVIEW").length;
-    const okCount = filteredCases.filter((c) => c.decision === "OK").length;
+    const total = cases.length;
+    const ngCount = cases.filter((c) => c.decision === "NG").length;
+    const reviewCount = cases.filter((c) => c.decision === "REVIEW").length;
+    const okCount = cases.filter((c) => c.decision === "OK").length;
 
     const ngRate = total > 0 ? ((ngCount / total) * 100).toFixed(2) : "0.00";
     const reviewRate = total > 0 ? ((reviewCount / total) * 100).toFixed(2) : "0.00";
@@ -86,22 +31,22 @@ export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
 
     const avgScore =
       total > 0
-        ? (filteredCases.reduce((sum, c) => sum + c.anomaly_score, 0) / total).toFixed(3)
+        ? (cases.reduce((sum, c) => sum + c.anomaly_score, 0) / total).toFixed(3)
         : "0.000";
 
     const avgInferenceTime =
       total > 0
-        ? (filteredCases.reduce((sum, c) => sum + c.inference_time_ms, 0) / total).toFixed(1)
+        ? (cases.reduce((sum, c) => sum + c.inference_time_ms, 0) / total).toFixed(1)
         : "0.0";
 
     const defectBreakdown: { [key: string]: number } = {};
-    filteredCases
+    cases
       .filter((c) => c.decision === "NG")
       .forEach((c) => {
         defectBreakdown[c.defect_type] = (defectBreakdown[c.defect_type] || 0) + 1;
       });
 
-    const representativeCases = filteredCases
+    const representativeCases = cases
       .filter((c) => c.decision === "NG")
       .sort((a, b) => b.anomaly_score - a.anomaly_score)
       .slice(0, 5);
@@ -118,16 +63,15 @@ export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
       avgInferenceTime,
       defectBreakdown,
       representativeCases,
-      filteredCases,
     };
-  }, [cases, selectedLine, selectedGroup, reportPeriod]);
+  }, [cases]);
 
   const hourlyTrend = useMemo(() => {
     const hourlyData: {
       [key: number]: { total: number; ng: number; review: number; ok: number };
     } = {};
 
-    reportMetrics.filteredCases.forEach((c) => {
+    cases.forEach((c) => {
       const hour = c.timestamp.getHours();
       if (!hourlyData[hour]) hourlyData[hour] = { total: 0, ng: 0, review: 0, ok: 0 };
       hourlyData[hour].total++;
@@ -144,7 +88,7 @@ export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
         정상: data.ok,
       }))
       .sort((a, b) => parseInt(a.hour) - parseInt(b.hour));
-  }, [reportMetrics.filteredCases]);
+  }, [cases]);
 
   const defectChartData = useMemo(() => {
     const typeLabels: { [key: string]: string } = {
@@ -162,64 +106,13 @@ export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
   }, [reportMetrics.defectBreakdown]);
 
   const handleExport = (format: string) => {
-    alert(`리포트를 ${format} 형식으로 내보냅니다.`);
+    alert(`현재 상단 필터 조건 기준으로 리포트를 ${format} 형식으로 내보냅니다.`);
   };
 
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-gray-900 mb-2">리포트 빌더</h1>
-        <p className="text-sm text-gray-600">기간별 품질 분석 리포트 자동 생성</p>
-      </div>
-
-      {/* Report Configuration */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
-        <h2 className="text-lg font-medium text-gray-900 mb-4">리포트 설정</h2>
-        <div className="grid grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">기간</label>
-            <select
-              value={reportPeriod}
-              onChange={(e) => setReportPeriod(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="today">오늘</option>
-              <option value="yesterday">어제</option>
-              <option value="week">최근 7일</option>
-              <option value="month">최근 30일</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">생산 라인</label>
-            <select
-              value={selectedLine}
-              onChange={(e) => setSelectedLine(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="all">전체 라인</option>
-              <option value="LINE-A-01">LINE-A-01</option>
-              <option value="LINE-B-02">LINE-B-02</option>
-              <option value="LINE-C-03">LINE-C-03</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">제품군</label>
-            <select
-              value={selectedGroup}
-              onChange={(e) => setSelectedGroup(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="all">전체 제품군</option>
-              {packagingClasses.map((cls) => (
-                <option key={cls} value={cls}>
-                  {cls}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+        <h1 className="text-2xl font-semibold text-gray-900 mb-2">운영 리포트</h1>
       </div>
 
       {/* Executive Summary */}
@@ -254,27 +147,6 @@ export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
             <p className="text-3xl font-semibold text-blue-700">{reportMetrics.avgScore}</p>
             <p className="text-xs text-blue-600 mt-1">{reportMetrics.avgInferenceTime}ms</p>
           </div>
-        </div>
-
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h3 className="font-medium text-blue-900 mb-2">핵심 인사이트</h3>
-          <ul className="space-y-2 text-sm text-blue-900">
-            <li className="flex items-start gap-2">
-              <span className="text-blue-600 mt-0.5">•</span>
-              <span>
-                전체 불량률은 <strong>{reportMetrics.ngRate}%</strong>로
-                {parseFloat(reportMetrics.ngRate) > 2.5
-                  ? " 목표치(2.5%)를 초과했습니다."
-                  : " 목표치(2.5%) 이하를 유지하고 있습니다."}
-              </span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-blue-600 mt-0.5">•</span>
-              <span>
-                평균 AI 추론 시간은 <strong>{reportMetrics.avgInferenceTime}ms</strong>로 안정적인 성능을 보이고 있습니다.
-              </span>
-            </li>
-          </ul>
         </div>
       </div>
 
@@ -334,35 +206,6 @@ export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
                     <Badge variant={caseData.severity} size="sm">
                       {caseData.severity === "high" ? "높음" : caseData.severity === "med" ? "중간" : "낮음"}
                     </Badge>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-4 gap-4 mb-3 text-sm">
-                  <div>
-                    <span className="text-gray-500 text-xs">제품</span>
-                    <p className="font-medium text-gray-900">{caseData.product_group}</p>
-                  </div>
-                  <div>
-                    <span className="text-gray-500 text-xs">결함 타입</span>
-                    <p className="font-medium text-gray-900">
-                      {caseData.defect_type === "seal_issue"
-                        ? "실링 불량"
-                        : caseData.defect_type === "contamination"
-                          ? "오염"
-                          : caseData.defect_type === "crack"
-                            ? "파손/균열"
-                            : caseData.defect_type === "missing_component"
-                              ? "구성요소 누락"
-                              : "스크래치"}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-gray-500 text-xs">Score</span>
-                    <p className="font-medium text-red-600">{caseData.anomaly_score.toFixed(3)}</p>
-                  </div>
-                  <div>
-                    <span className="text-gray-500 text-xs">영향 면적</span>
-                    <p className="font-medium text-gray-900">{caseData.affected_area_pct.toFixed(1)}%</p>
                   </div>
                 </div>
 

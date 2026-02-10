@@ -21,7 +21,7 @@ const PRODUCT_GROUP_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "cigarette box", label: "cigarette box" },
   { value: "drink bottle", label: "drink bottle" },
   { value: "drink can", label: "drink can" },
-  { value: "food_bottle", label: "food_bottle" },
+  { value: "food_bottle", label: "food bottle" },
   { value: "food box", label: "food box" },
   { value: "food package", label: "food package" },
   { value: "breakfast box", label: "breakfast box" },

@@ -197,10 +197,30 @@ export function OverviewPage({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KPICard title="검사 수" value={total.toLocaleString()} subtext="오늘 누적 검사량" icon={Activity} />
-        <KPICard title="불량률" value={`${defectRate}%`} subtext="오늘 검사 대비 불량" icon={AlertTriangle} />
-        <KPICard title="재검률" value={`${reviewRate}%`} subtext="AI 판정 보류 건" icon={CheckCircle} />
-        <KPICard title="평균 추론 시간" value={`${avgInference}ms`} subtext={activeModel} icon={Clock} />
+        <KPICard
+          title="검사 수"
+          value={total.toLocaleString()}
+          subtext="오늘 누적 검사량"
+          icon={Activity}
+        />
+        <KPICard
+          title="불량률"
+          value={`${defectRate}%`}
+          subtext="오늘 검사 대비 불량"
+          icon={AlertTriangle}
+        />
+        <KPICard
+          title="재검률"
+          value={`${reviewRate}%`}
+          subtext="AI 판정 보류 건"
+          icon={CheckCircle}
+        />
+        <KPICard
+          title="평균 추론 시간"
+          value={`${avgInference}ms`}
+          subtext={activeModel}
+          icon={Clock}
+        />
       </div>
 
       {/* Alerts */}
@@ -255,7 +275,10 @@ export function OverviewPage({
                       {alert.title}
                     </h3>
                     <span className="text-xs text-gray-500">
-                      {alert.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      {alert.timestamp.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </span>
                   </div>
 
@@ -287,7 +310,13 @@ export function OverviewPage({
               <XAxis dataKey="time" tick={{ fontSize: 12 }} stroke="#6b7280" />
               <YAxis tick={{ fontSize: 12 }} stroke="#6b7280" />
               <Tooltip />
-              <Line type="monotone" dataKey="불량률" stroke="#ef4444" strokeWidth={2} dot={{ fill: "#ef4444", r: 4 }} />
+              <Line
+                type="monotone"
+                dataKey="불량률"
+                stroke="#ef4444"
+                strokeWidth={2}
+                dot={{ fill: "#ef4444", r: 4 }}
+              />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -338,12 +367,7 @@ export function OverviewPage({
       <div className="bg-white border border-gray-200 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-bold text-gray-900">최근 이상 케이스</h3>
-          <button
-            onClick={() => onFilterUpdate({ decision: "NG" })}
-            className="text-sm text-blue-600 hover:text-blue-700"
-          >
-            전체 보기 →
-          </button>
+          {/* ✅ 전체 보기 → 삭제 */}
         </div>
 
         <div className="overflow-x-auto">
@@ -369,7 +393,10 @@ export function OverviewPage({
                 >
                   <td className="py-3 px-4 text-sm font-mono text-blue-600">{anomaly.id}</td>
                   <td className="py-3 px-4 text-sm text-gray-700">
-                    {anomaly.timestamp.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}
+                    {anomaly.timestamp.toLocaleTimeString("ko-KR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
                   </td>
                   <td className="py-3 px-4 text-sm text-gray-700">{anomaly.line_id}</td>
                   <td className="py-3 px-4 text-sm text-gray-700">{anomaly.product_group}</td>
@@ -399,6 +426,13 @@ export function OverviewPage({
                   </td>
                 </tr>
               ))}
+              {recentAnomalies.length === 0 && (
+                <tr>
+                  <td className="py-8 px-4 text-sm text-gray-500 text-center" colSpan={8}>
+                    최근 이상 케이스가 없습니다.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
