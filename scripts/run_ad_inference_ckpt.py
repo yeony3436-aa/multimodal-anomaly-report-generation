@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Disable HuggingFace online checks (prevents slow downloads)
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import cv2
 import numpy as np
@@ -168,19 +173,22 @@ class PatchCoreCheckpointManager:
         tensor = torch.from_numpy(img).unsqueeze(0).float()
         return tensor.to(self.device)
 
-    def predict(self, dataset: str, category: str, image: np.ndarray) -> Dict[str, Any]:
-        """Run inference on image."""
+    def warmup_model(self, dataset: str, category: str):
+        """Warmup model with dummy input."""
         model = self.get_model(dataset, category)
         key = f"{dataset}/{category}"
 
-        # Warmup on first inference
         if key not in self._warmup_done:
+            dummy = torch.randn(1, 3, self.input_size[0], self.input_size[1]).to(self.device)
             with torch.no_grad():
-                dummy = self._preprocess(image)
                 _ = model(dummy)
             if self.device.type == "cuda":
                 torch.cuda.synchronize()
             self._warmup_done.add(key)
+
+    def predict(self, dataset: str, category: str, image: np.ndarray) -> Dict[str, Any]:
+        """Run inference on image."""
+        model = self.get_model(dataset, category)
 
         # Preprocess
         input_tensor = self._preprocess(image)
@@ -188,13 +196,7 @@ class PatchCoreCheckpointManager:
 
         # Inference
         with torch.no_grad():
-            if self.device.type == "cuda":
-                torch.cuda.synchronize()
-
             outputs = model(input_tensor)
-
-            if self.device.type == "cuda":
-                torch.cuda.synchronize()
 
         # Extract results
         anomaly_map = getattr(outputs, "anomaly_map", None)
@@ -344,6 +346,20 @@ def main():
     print(f"Available models: {len(available_models)}")
     for dataset, category in available_models:
         print(f"  - {dataset}/{category}")
+
+    # Pre-load all models and warmup to avoid loading during inference
+    print()
+    print("Pre-loading and warming up models...")
+    for dataset, category in tqdm(available_models, desc="Loading models"):
+        try:
+            model_manager.get_model(dataset, category)
+            model_manager.warmup_model(dataset, category)
+        except Exception as e:
+            print(f"  Failed to load {dataset}/{category}: {e}")
+    print(f"Loaded {len(model_manager._models)} models")
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Process images
     results = list(existing_results.values())
