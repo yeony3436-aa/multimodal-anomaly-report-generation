@@ -25,21 +25,8 @@ PROJ_ROOT = SCRIPT_PATH.parents[1]
 if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
-os.environ["TQDM_DISABLE"] = "1"
-
-import tqdm
-from tqdm import tqdm as tqdm_class
-
-_original_tqdm_init = tqdm_class.__init__
-
-def _patched_tqdm_init(self, *args, **kwargs):
-    kwargs["disable"] = True
-    _original_tqdm_init(self, *args, **kwargs)
-
-tqdm_class.__init__ = _patched_tqdm_init
-tqdm.tqdm = tqdm_class
-
 import argparse
+from tqdm import tqdm
 import json
 import time
 from pathlib import Path
@@ -477,13 +464,14 @@ class PatchCoreTrainer:
         total = len(categories)
         get_train_logger().info(f"fit_all: {total} categories")
 
-        for idx, (dataset, category) in enumerate(categories, 1):
-            print(f"\n[{idx}/{total}] Training: {dataset}/{category}...")
+        pbar = tqdm(categories, desc="Training", unit="category", ncols=100)
+        for dataset, category in pbar:
+            pbar.set_description(f"Training {dataset}/{category}")
             start = time.time()
             self.fit(dataset, category)
             elapsed = time.time() - start
-            msg = f"[{idx}/{total}] {dataset}/{category} done ({elapsed:.1f}s)"
-            print(f"  {msg}")
+            msg = f"{dataset}/{category} done ({elapsed:.1f}s)"
+            pbar.set_postfix_str(msg)
             get_train_logger().info(msg)
 
         get_train_logger().info(f"fit_all completed: {total} categories")
@@ -495,9 +483,10 @@ class PatchCoreTrainer:
         print(f"\nEvaluating {total} trained models...")
 
         all_results = {}
-        for idx, (dataset, category) in enumerate(categories, 1):
+        pbar = tqdm(categories, desc="Testing", unit="category", ncols=100)
+        for dataset, category in pbar:
             key = f"{dataset}/{category}"
-            print(f"\n[{idx}/{total}] Testing: {key}...")
+            pbar.set_description(f"Testing {key}")
             start = time.time()
             metrics = self.test(dataset, category)
             elapsed = time.time() - start
@@ -508,7 +497,7 @@ class PatchCoreTrainer:
             img_auroc = metrics.get("image_AUROC", 0)
             pixel_auroc = metrics.get("pixel_AUROC", 0)
             aupro = metrics.get("AUPRO", 0)
-            print(f"  Image AUROC: {img_auroc:.4f} | Pixel AUROC: {pixel_auroc:.4f} | AUPRO: {aupro:.4f} ({elapsed:.1f}s)")
+            pbar.set_postfix_str(f"I:{img_auroc:.3f} P:{pixel_auroc:.3f} ({elapsed:.1f}s)")
 
         # Print summary
         if all_results:
@@ -534,15 +523,15 @@ class PatchCoreTrainer:
         get_inference_logger().info(f"predict_all: {total} trained categories")
 
         all_predictions = {}
-        for idx, (dataset, category) in enumerate(categories, 1):
-            print(f"\n[{idx}/{total}] Predicting: {dataset}/{category}...")
-            start = time.time()
+        pbar = tqdm(categories, desc="Predicting", unit="category", ncols=100)
+        for dataset, category in pbar:
             key = f"{dataset}/{category}"
+            pbar.set_description(f"Predicting {key}")
+            start = time.time()
             all_predictions[key] = self.predict(dataset, category, save_json)
             elapsed = time.time() - start
-            msg = f"[{idx}/{total}] {dataset}/{category} done ({elapsed:.1f}s)"
-            print(f"  {msg}")
-            get_inference_logger().info(msg)
+            pbar.set_postfix_str(f"done ({elapsed:.1f}s)")
+            get_inference_logger().info(f"{key} done ({elapsed:.1f}s)")
 
         get_inference_logger().info(f"predict_all completed: {total} categories")
         return all_predictions
