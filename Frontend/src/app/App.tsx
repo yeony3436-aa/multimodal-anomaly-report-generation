@@ -9,7 +9,7 @@ import { AnomalyQueuePage } from "./pages/AnomalyQueuePage";
 import { CaseDetailPage } from "./pages/CaseDetailPage";
 import { ReportBuilderPage } from "./pages/ReportBuilderPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { ReportsPage } from "./pages/ReportsPage";
+// ❌ 제거: import { ReportsPage } from "./pages/ReportsPage";
 
 // data & utils
 import { mapReportsToAnomalyCases } from "./data/reportMapper";
@@ -77,7 +77,7 @@ export default function App() {
     localStorage.setItem("notificationSettings", JSON.stringify(notificationSettings));
   }, [notificationSettings]);
 
-  // ✅ 백엔드 reports -> cases 매핑 (App에서 직접 /llava/reports 호출 금지)
+  // ✅ 백엔드 reports -> cases 매핑
   useEffect(() => {
     const ac = new AbortController();
 
@@ -131,7 +131,6 @@ export default function App() {
       if (filters.defectType !== "all" && c.defect_type !== filters.defectType) return false;
       if (filters.decision !== "all" && c.decision !== filters.decision) return false;
       if (c.anomaly_score < filters.scoreRange[0] || c.anomaly_score > filters.scoreRange[1]) return false;
-
       return true;
     });
   }, [casesWithSettings, filters]);
@@ -178,8 +177,7 @@ export default function App() {
         return <AnomalyQueuePage cases={filteredCases} onCaseClick={handleCaseClick} />;
       case "report":
         return <ReportBuilderPage cases={filteredCases} />;
-      case "llava":
-        return <ReportsPage />;
+      // ❌ 제거: case "llava": return <ReportsPage />;
       case "settings":
         return (
           <SettingsPage

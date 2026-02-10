@@ -90,20 +90,20 @@ export function AnomalyQueuePage({ cases, onCaseClick }: AnomalyQueuePageProps) 
                   </span>
                 </td>
 
-                <td className="px-6 py-4">
-                  <span
-                    className={`px-2 py-1 rounded border text-xs ${
-                      c.severity === "high"
-                        ? "bg-red-50 border-red-200 text-red-700"
-                        : c.severity === "med"
-                          ? "bg-orange-50 border-orange-200 text-orange-700"
-                          : "bg-gray-50 border-gray-200 text-gray-600"
-                    }`}
-                  >
-                    {c.severity === "high" ? "높음" : c.severity === "med" ? "중간" : "낮음"}
-                  </span>
-                </td>
-
+              <td className="px-6 py-4 whitespace-nowrap">
+                <span
+                  className={`inline-flex items-center justify-center px-2 py-1 rounded border text-xs whitespace-nowrap ${
+                    c.severity === "high"
+                      ? "bg-red-50 border-red-200 text-red-700"
+                      : c.severity === "med"
+                        ? "bg-orange-50 border-orange-200 text-orange-700"
+                        : "bg-gray-50 border-gray-200 text-gray-600"
+                  }`}
+  >
+                  {c.severity === "high" ? "높음" : c.severity === "med" ? "중간" : "낮음"}
+                </span>
+              </td>
+              
                 <td className="px-6 py-4 text-right">
                   <button
                     onClick={() => onCaseClick(c.id)}
