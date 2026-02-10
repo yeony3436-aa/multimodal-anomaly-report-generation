@@ -143,19 +143,9 @@ class PatchCoreTrainer:
 
     @staticmethod
     def compute_pro(preds: np.ndarray, targets: np.ndarray, num_thresholds: int = 50) -> float:
-        """Compute Per-Region Overlap (PRO) score.
-
-        Args:
-            preds: Predicted anomaly maps (N, H, W), values 0-1
-            targets: Ground truth masks (N, H, W), binary
-            num_thresholds: Number of thresholds to sample
-
-        Returns:
-            PRO score (0-1)
-        """
+        """Compute Per-Region Overlap (PRO) score."""
         import cv2
 
-        # Thresholds from 0 to 1
         thresholds = np.linspace(0, 1, num_thresholds)
         pro_scores = []
 
@@ -163,24 +153,21 @@ class PatchCoreTrainer:
             region_overlaps = []
 
             for pred, target in zip(preds, targets):
-                if target.max() == 0:  # Skip normal samples
+                if target.max() == 0:
                     continue
 
-                # Binary prediction at threshold
                 pred_binary = (pred >= threshold).astype(np.uint8)
                 target_binary = (target > 0).astype(np.uint8)
 
-                # Find connected components in ground truth
                 num_labels, labels = cv2.connectedComponents(target_binary)
 
-                for label_id in range(1, num_labels):  # Skip background (0)
+                for label_id in range(1, num_labels):
                     region_mask = (labels == label_id)
                     region_area = region_mask.sum()
 
                     if region_area == 0:
                         continue
 
-                    # Overlap between prediction and this region
                     overlap = (pred_binary & region_mask).sum()
                     overlap_ratio = overlap / region_area
                     region_overlaps.append(overlap_ratio)
@@ -191,11 +178,7 @@ class PatchCoreTrainer:
         return float(np.mean(pro_scores)) if pro_scores else 0.0
 
     def get_model(self, with_evaluator: bool = True):
-        """Create PatchCore model with optional evaluator.
-
-        Args:
-            with_evaluator: If True, attach evaluator with AUPRO metrics
-        """
+        """Create PatchCore model with optional evaluator."""
         if with_evaluator:
             evaluator = self.get_evaluator()
             return Patchcore(evaluator=evaluator, **self.model_params)
@@ -390,7 +373,6 @@ class PatchCoreTrainer:
             print(f"  No checkpoint found for {dataset}/{category}")
             return {}
 
-        # Load model from checkpoint
         model = Patchcore.load_from_checkpoint(str(ckpt_path))
         model.evaluator = self.get_evaluator()
 
@@ -398,7 +380,6 @@ class PatchCoreTrainer:
         dm_kwargs["include_mask"] = True
         datamodule = self.loader.get_datamodule(dataset, category, **dm_kwargs)
 
-        # Run test for basic metrics (AUROC, F1)
         engine = self.get_engine(dataset, category, stage="test")
         results = engine.test(datamodule=datamodule, model=model)
 
@@ -415,7 +396,6 @@ class PatchCoreTrainer:
                 datamodule.setup(stage="predict")
                 predict_loader = datamodule.predict_dataloader()
 
-                # Collect anomaly maps and gt masks
                 preds_list = []
                 targets_list = []
 
@@ -426,14 +406,13 @@ class PatchCoreTrainer:
 
                         anomaly_map = getattr(outputs, "anomaly_map", None)
                         if anomaly_map is not None:
-                            # Resize to input size if needed
                             if anomaly_map.shape[-2:] != images.shape[-2:]:
                                 anomaly_map = interpolate(anomaly_map, size=images.shape[-2:], mode="bilinear", align_corners=False)
 
                             for i in range(len(anomaly_map)):
                                 amap = anomaly_map[i].cpu().numpy()
                                 if amap.ndim == 3:
-                                    amap = amap[0]  # Remove channel dim
+                                    amap = amap[0]
                                 preds_list.append(amap)
 
                                 if batch.gt_mask is not None:
@@ -467,7 +446,6 @@ class PatchCoreTrainer:
             print(f"  No checkpoint found for {dataset}/{category}")
             return []
 
-        # Load model directly from checkpoint
         model = Patchcore.load_from_checkpoint(str(ckpt_path))
         model.eval()
         model.to(self.device)
@@ -479,7 +457,7 @@ class PatchCoreTrainer:
         datamodule.setup(stage="predict")
         predict_loader = datamodule.predict_dataloader()
 
-        # Warmup (GPU/MPS initialization cost removal)
+        # Warmup
         warmup_batch = next(iter(predict_loader))
         with torch.no_grad():
             _ = model(warmup_batch.image.to(self.device))
@@ -488,7 +466,7 @@ class PatchCoreTrainer:
         elif self.device.type == "mps":
             torch.mps.synchronize()
 
-        # Pure inference (no Engine, measure forward pass only)
+        # Pure inference
         all_predictions = []
         inference_time = 0.0
         n_images = 0
@@ -517,7 +495,6 @@ class PatchCoreTrainer:
                 anomaly_map = getattr(outputs, "anomaly_map", None)
                 pred_score = getattr(outputs, "pred_score", None)
 
-                # Resize anomaly map to input size if needed
                 if anomaly_map is not None and anomaly_map.shape[-2:] != images.shape[-2:]:
                     anomaly_map = interpolate(anomaly_map, size=images.shape[-2:], mode="bilinear", align_corners=False)
 
@@ -536,7 +513,6 @@ class PatchCoreTrainer:
                 )
                 all_predictions.append(result)
 
-        # Store timing info for predict_all
         self.last_inference_time = inference_time
         self.last_n_images = n_images
 
@@ -665,13 +641,11 @@ class PatchCoreTrainer:
 
             all_results[key] = metrics
 
-            # Print metrics
             img_auroc = metrics.get("image_AUROC", 0)
             pixel_auroc = metrics.get("pixel_AUROC", 0)
             pro = metrics.get("PRO", 0)
             pbar.set_postfix_str(f"I:{img_auroc:.3f} P:{pixel_auroc:.3f} PRO:{pro:.3f} ({elapsed:.1f}s)")
 
-        # Print summary
         if all_results:
             print("\n" + "=" * 70)
             print(f"{'Category':<35} {'I-AUROC':>10} {'P-AUROC':>10} {'PRO':>10}")
@@ -681,7 +655,6 @@ class PatchCoreTrainer:
                       f"{metrics.get('pixel_AUROC', 0):>10.4f} {metrics.get('PRO', 0):>10.4f}")
             print("=" * 70)
 
-            # Average
             avg_img = sum(m.get("image_AUROC", 0) for m in all_results.values()) / len(all_results)
             avg_pix = sum(m.get("pixel_AUROC", 0) for m in all_results.values()) / len(all_results)
             avg_pro = sum(m.get("PRO", 0) for m in all_results.values()) / len(all_results)
@@ -701,13 +674,10 @@ class PatchCoreTrainer:
             self.last_n_images = 0
             key = f"{dataset}/{category}"
             all_predictions[key] = self.predict(dataset, category, save_json)
-            infer_t = getattr(self, "last_inference_time", 0.0)
-            n_img = getattr(self, "last_n_images", 0)
+            infer_t = self.last_inference_time
+            n_img = self.last_n_images
             ms_per_img = (infer_t / n_img * 1000) if n_img > 0 else 0
-            msg = (
-                f"[{idx}/{total}] {dataset}/{category} done "
-                f"(inference: {infer_t:.2f}s, {ms_per_img:.1f}ms/img)"
-            )
+            msg = f"[{idx}/{total}] {dataset}/{category} done (inference: {infer_t:.2f}s, {ms_per_img:.1f}ms/img)"
             print(f"  {msg}")
             get_inference_logger().info(msg)
 
@@ -726,7 +696,7 @@ def main():
     args = parser.parse_args()
 
     trainer = PatchCoreTrainer(config_path=args.config)
-    trainer.skip_aupro = args.no_aupro  # Flag for skipping AUPRO
+    trainer.skip_aupro = args.no_aupro
 
     if args.mode == "fit":
         if args.dataset and args.category:
