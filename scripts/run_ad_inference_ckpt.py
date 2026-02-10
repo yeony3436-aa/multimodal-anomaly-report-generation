@@ -439,12 +439,6 @@ def main():
 
         pbar.set_postfix({"done": processed, "skip": skipped, "err": errors})
 
-        # Save periodically
-        if processed % 100 == 0:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(results, f, indent=2, ensure_ascii=False)
-
     pbar.close()
 
     # Save final results
