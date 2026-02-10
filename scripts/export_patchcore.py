@@ -115,51 +115,56 @@ class PatchCoreONNXWrapper(torch.nn.Module):
 
     def __init__(self, model, input_size: Tuple[int, int]):
         super().__init__()
-        self.model = model
         self.input_size = input_size
 
-        # Get the feature extractor and memory bank from anomalib model
+        # Get the inner model from anomalib
         if hasattr(model, "model"):
             inner_model = model.model
         else:
             inner_model = model
 
-        # Copy feature extractor
+        # Copy the entire feature extractor (handles dict output internally)
         self.feature_extractor = inner_model.feature_extractor
-        self.feature_pooler = inner_model.feature_pooler
 
         # Register memory bank as buffer (will be included in ONNX)
         memory_bank = inner_model.memory_bank.clone()
         self.register_buffer("memory_bank", memory_bank)
 
-        # Get anomaly map generator settings
-        self.anomaly_map_generator = inner_model.anomaly_map_generator
+        # Store layers info for feature extraction
+        self.layers = inner_model.layers if hasattr(inner_model, "layers") else ["layer2", "layer3"]
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass that computes anomaly map and score.
-
-        Args:
-            x: Input image tensor [B, 3, H, W]
-
-        Returns:
-            anomaly_map: [B, 1, H, W]
-            pred_score: [B]
-        """
+        """Forward pass that computes anomaly map and score."""
         batch_size = x.shape[0]
 
-        # Extract features
-        features = self.feature_extractor(x)
-        features = self.feature_pooler(features)
+        # Extract features - returns dict of {layer_name: tensor}
+        feature_dict = self.feature_extractor(x)
+
+        # Get features from specified layers and concatenate
+        features_list = []
+        target_size = None
+
+        for layer_name in self.layers:
+            if layer_name in feature_dict:
+                feat = feature_dict[layer_name]
+                if target_size is None:
+                    target_size = feat.shape[-2:]
+                else:
+                    # Resize to match first layer's size
+                    feat = torch.nn.functional.interpolate(
+                        feat, size=target_size, mode="bilinear", align_corners=False
+                    )
+                features_list.append(feat)
+
+        # Concatenate along channel dimension
+        features = torch.cat(features_list, dim=1)  # [B, C, H, W]
 
         # Reshape features for distance computation
-        # features: [B, C, H, W] -> [B*H*W, C]
         b, c, h, w = features.shape
-        features_flat = features.permute(0, 2, 3, 1).reshape(-1, c)
+        features_flat = features.permute(0, 2, 3, 1).reshape(-1, c)  # [B*H*W, C]
 
-        # Compute distances to memory bank
-        # memory_bank: [N, C]
-        # distances: [B*H*W, N]
-        distances = torch.cdist(features_flat, self.memory_bank, p=2)
+        # Compute distances to memory bank using cdist
+        distances = torch.cdist(features_flat, self.memory_bank, p=2)  # [B*H*W, N]
 
         # Get minimum distance for each patch
         min_distances, _ = distances.min(dim=1)  # [B*H*W]
@@ -218,6 +223,15 @@ def export_to_onnx(
 
         # Create wrapper model with memory bank
         try:
+            # Debug: print model structure
+            if hasattr(model, "model"):
+                inner = model.model
+                print(f"  Inner model type: {type(inner).__name__}")
+                if hasattr(inner, "layers"):
+                    print(f"  Layers: {inner.layers}")
+                if hasattr(inner, "feature_extractor"):
+                    print(f"  Feature extractor type: {type(inner.feature_extractor).__name__}")
+
             wrapper = PatchCoreONNXWrapper(model, input_size)
             wrapper.eval()
 
