@@ -1,3 +1,4 @@
+// src/app/components/Badge.tsx
 import React from 'react';
 
 interface BadgeProps {
@@ -7,7 +8,6 @@ interface BadgeProps {
 }
 
 export function Badge({ children, variant, size = 'md' }: BadgeProps) {
-  // ✅ whitespace-nowrap 추가 (줄바꿈 방지)
   const baseClasses = 'inline-flex items-center justify-center rounded font-medium whitespace-nowrap leading-none';
 
   const sizeClasses = {

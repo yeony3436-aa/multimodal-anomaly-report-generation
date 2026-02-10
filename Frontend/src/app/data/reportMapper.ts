@@ -185,7 +185,7 @@ export function mapReportsToAnomalyCases(raw: ReportDTO[]): AnomalyCase[] {
       affected_area_pct,
       severity,
 
-      model_name: "EfficientAD", // App.tsx에서 activeModel로 덮어쓰기
+      model_name: "EfficientAD", 
       model_version: "v1.0.0",
       inference_time_ms: typeof r.inference_time === "number" ? Math.round(r.inference_time * 1000) : 0,
 

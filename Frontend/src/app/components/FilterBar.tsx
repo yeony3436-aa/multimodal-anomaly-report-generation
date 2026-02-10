@@ -1,7 +1,10 @@
 // src/app/components/FilterBar.tsx
 import React from "react";
 import { Filter, X } from "lucide-react";
-import { defectTypeLabel, decisionLabel } from "../utils/labels";
+import {
+  defectTypeLabel as defectTypeLabelRaw,
+  decisionLabel as decisionLabelRaw,
+} from "../utils/labels";
 
 export interface FilterState {
   dateRange: string;
@@ -33,6 +36,19 @@ const PRODUCT_GROUP_OPTIONS: Array<{ value: string; label: string }> = [
 function labelOfProductGroup(value: string) {
   const hit = PRODUCT_GROUP_OPTIONS.find((o) => o.value === value);
   return hit ? hit.label : value;
+}
+
+/**
+ * labels.ts의 export 형태가
+ * - (key: string) => string (함수)
+ * - Record<string,string> (객체 맵)
+ * 중 어떤 형태여도 안전하게 label을 뽑도록 함.
+ */
+function labelOf(mapper: unknown, key: string) {
+  if (!key) return key;
+  if (typeof mapper === "function") return (mapper as (k: string) => string)(key);
+  if (mapper && typeof mapper === "object") return (mapper as Record<string, string>)[key] ?? key;
+  return key;
 }
 
 export function FilterBar({ filters, onFilterChange }: FilterBarProps) {
@@ -105,11 +121,11 @@ export function FilterBar({ filters, onFilterChange }: FilterBarProps) {
             className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="all">전체 결함 타입</option>
-            <option value="seal_issue">실링 불량</option>
-            <option value="contamination">오염</option>
-            <option value="crack">파손/균열</option>
-            <option value="missing_component">구성요소 누락</option>
-            <option value="scratch">스크래치</option>
+            <option value="seal_issue">{labelOf(defectTypeLabelRaw, "seal_issue")}</option>
+            <option value="contamination">{labelOf(defectTypeLabelRaw, "contamination")}</option>
+            <option value="crack">{labelOf(defectTypeLabelRaw, "crack")}</option>
+            <option value="missing_component">{labelOf(defectTypeLabelRaw, "missing_component")}</option>
+            <option value="scratch">{labelOf(defectTypeLabelRaw, "scratch")}</option>
           </select>
 
           <select
@@ -118,9 +134,9 @@ export function FilterBar({ filters, onFilterChange }: FilterBarProps) {
             className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="all">전체 판정</option>
-            <option value="OK">OK</option>
-            <option value="NG">NG</option>
-            <option value="REVIEW">REVIEW</option>
+            <option value="OK">{labelOf(decisionLabelRaw, "OK")}</option>
+            <option value="NG">{labelOf(decisionLabelRaw, "NG")}</option>
+            <option value="REVIEW">{labelOf(decisionLabelRaw, "REVIEW")}</option>
           </select>
 
           {hasActiveFilters && (
@@ -135,7 +151,7 @@ export function FilterBar({ filters, onFilterChange }: FilterBarProps) {
         </div>
 
         {hasActiveFilters && (
-          <div className="flex items-center gap-2 mt-3">
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
             <span className="text-xs text-gray-500">활성 필터:</span>
 
             {filters.line !== "all" && (
@@ -152,13 +168,19 @@ export function FilterBar({ filters, onFilterChange }: FilterBarProps) {
 
             {filters.defectType !== "all" && (
               <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded">
-                결함: {filters.defectType}
+                결함: {labelOf(defectTypeLabelRaw, filters.defectType)}
               </span>
             )}
 
             {filters.decision !== "all" && (
               <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded">
-                판정: {filters.decision}
+                판정: {labelOf(decisionLabelRaw, filters.decision)}
+              </span>
+            )}
+
+            {(filters.scoreRange[0] > 0 || filters.scoreRange[1] < 1) && (
+              <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded">
+                Score: {filters.scoreRange[0].toFixed(2)} ~ {filters.scoreRange[1].toFixed(2)}
               </span>
             )}
           </div>

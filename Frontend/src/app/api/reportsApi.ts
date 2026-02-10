@@ -2,10 +2,10 @@
 import { apiRequest, apiUrl, QueryParams } from "./http";
 
 /**
- * 모델명이 LLaVA -> 다른 것으로 바뀌어도
- * 여기 REPORTS_BASE만 바꾸면 프론트 전반은 그대로 유지됩니다.
+ * 모델명이 LLaVA -> 다른 것으로 바뀌어도 ("/"")
+ * REPORTS_BASE만 바꾸면 프론트 전반은 그대로 유지됨
  */
-const REPORTS_BASE = "/llava"; // 나중에 "/reports" 등으로 바뀌면 여기만 수정
+const REPORTS_BASE = "/llava"; 
 
 export type ReportDTO = {
   id: number;

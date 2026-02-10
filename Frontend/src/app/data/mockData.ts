@@ -66,7 +66,7 @@ export const mockCases: AnomalyCase[] = [
     timestamp: new Date("2026-02-08T14:32:15"),
     line_id: "LINE-A-01",
     shift: "주간",
-    product_group: "food box", // Was "Food" + "상자"
+    product_group: "food box",
     image_id: "IMG-A01-20260208-143215",
     decision: "NG",
     anomaly_score: 0.87,

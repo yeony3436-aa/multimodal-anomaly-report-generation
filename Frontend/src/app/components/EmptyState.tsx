@@ -1,3 +1,4 @@
+// src/app/components/EmptyState.tsx
 import React from 'react';
 import { FileX, AlertCircle } from 'lucide-react';
 

@@ -78,7 +78,7 @@ function defectKo(defectType?: string) {
             : defectType;
 }
 
-// ✅ 알림 설명을 "필드 기반"으로 생성 (review 알림은 product_group 우선)
+// 알림 설명을 필드 기반으로 생성 (review 알림은 product_group 우선)
 function alertDescription(a: Alert) {
   if (a.type === "review") {
     const pg = a.product_group ?? "제품";

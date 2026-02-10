@@ -15,7 +15,7 @@ import {
 } from "recharts";
 
 interface ReportBuilderPageProps {
-  cases: AnomalyCase[]; // ✅ App.tsx에서 이미 필터 적용된 filteredCases가 들어옴
+  cases: AnomalyCase[]; 
 }
 
 export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {

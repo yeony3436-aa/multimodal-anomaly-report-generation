@@ -5,7 +5,6 @@ import {
   ListFilter,
   FileText,
   Settings,
-  // ScrollText,  // ❌ 제거
 } from "lucide-react";
 
 interface SidebarProps {
@@ -17,8 +16,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const navItems = [
     { id: "overview", label: "개요", icon: LayoutDashboard },
     { id: "queue", label: "이상 큐", icon: ListFilter },
-    { id: "report", label: "운영 리포트", icon: FileText }, // ✅ rename 추천
-    // { id: "llava", label: "AI 리포트", icon: ScrollText }, // ❌ 제거
+    { id: "report", label: "운영 리포트", icon: FileText }, 
     { id: "settings", label: "설정", icon: Settings },
   ];
 

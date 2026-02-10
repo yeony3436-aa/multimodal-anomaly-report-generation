@@ -2,14 +2,20 @@
 export const API_BASE =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
-export type QueryParams = Record<string, string | number | boolean | null | undefined>;
+export type QueryParams = Record<
+  string,
+  string | number | boolean | null | undefined
+>;
 
 export class ApiError extends Error {
   status?: number;
   url?: string;
   body?: unknown;
 
-  constructor(message: string, opts?: { status?: number; url?: string; body?: unknown }) {
+  constructor(
+    message: string,
+    opts?: { status?: number; url?: string; body?: unknown }
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = opts?.status;
@@ -34,6 +40,27 @@ export function apiUrl(path: string, query?: QueryParams) {
   return `${API_BASE}${p}${buildQueryString(query)}`;
 }
 
+function fastapiDetailMessage(payload: unknown): string | null {
+
+  if (!payload || typeof payload !== "object") return null;
+  const detail = (payload as any).detail;
+  if (!detail) return null;
+
+  if (typeof detail === "string") return detail;
+
+  if (Array.isArray(detail)) {
+    const first = detail[0];
+    if (typeof first === "string") return first;
+    if (first && typeof first === "object") {
+      return first.msg ?? first.message ?? JSON.stringify(first);
+    }
+    return JSON.stringify(detail);
+  }
+
+  if (typeof detail === "object") return JSON.stringify(detail);
+  return null;
+}
+
 export async function apiRequest<T>(
   path: string,
   opts?: {
@@ -46,13 +73,19 @@ export async function apiRequest<T>(
 ): Promise<T> {
   const url = apiUrl(path, opts?.query);
 
+  const hasBody = opts?.body !== undefined;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...(opts?.headers ?? {}),
+  };
+
+  // body가 있을 때만 Content-Type을 붙여 preflight 가능성을 줄임
+  if (hasBody) headers["Content-Type"] = "application/json";
+
   const res = await fetch(url, {
     method: opts?.method ?? "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(opts?.headers ?? {}),
-    },
-    body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    headers,
+    body: hasBody ? JSON.stringify(opts!.body) : undefined,
     signal: opts?.signal,
   });
 
@@ -67,7 +100,9 @@ export async function apiRequest<T>(
   }
 
   if (!res.ok) {
-    throw new ApiError(`HTTP ${res.status}`, { status: res.status, url, body: payload });
+    const detail = fastapiDetailMessage(payload);
+    const msg = detail ? `${res.status} ${detail}` : `HTTP ${res.status}`;
+    throw new ApiError(msg, { status: res.status, url, body: payload });
   }
 
   return payload as T;

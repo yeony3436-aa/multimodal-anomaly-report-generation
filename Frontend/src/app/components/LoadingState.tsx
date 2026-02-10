@@ -1,3 +1,4 @@
+// src/app/components/LoadingState.tsx
 import React from 'react';
 
 export function LoadingState() {
