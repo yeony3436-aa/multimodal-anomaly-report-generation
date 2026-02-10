@@ -84,11 +84,14 @@ def find_checkpoints(
 
             # Find checkpoint
             if version is not None:
+                # Strict version: only use specified version, no fallback
                 ckpt = category_dir / f"v{version}" / "model.ckpt"
                 if ckpt.exists():
                     checkpoints.append((dataset_dir.name, category_dir.name, ckpt))
+                else:
+                    print(f"  Warning: v{version} not found for {dataset_dir.name}/{category_dir.name}, skipping")
             else:
-                # Find latest version
+                # No version specified: use latest
                 versions = []
                 for v_dir in category_dir.iterdir():
                     if v_dir.is_dir() and v_dir.name.startswith("v"):
@@ -203,7 +206,7 @@ def main():
     parser = argparse.ArgumentParser(description="Export PatchCore for optimized inference")
     parser.add_argument("--checkpoint-dir", type=str, default="output")
     parser.add_argument("--output-dir", type=str, default="models/onnx")
-    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--config", type=str, default="configs/anomaly.yaml")
     parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--category", type=str, default=None)
     parser.add_argument("--input-size", type=int, nargs=2, default=[700, 700])

@@ -106,6 +106,8 @@ class PatchCoreTrainer:
         self.device = get_device()
         self.accelerator = self.engine_config.get("accelerator", "auto")
         self.loader = MMADLoader(config=self.config, model_name="patchcore")
+        self.last_inference_time = 0.0
+        self.last_n_images = 0
         print(f"[PatchCore] device: {self.device}, accelerator: {self.accelerator}")
 
     @staticmethod
@@ -402,28 +404,43 @@ class PatchCoreTrainer:
 
         metrics = results[0] if results else {}
 
-        # Compute PRO separately using predictions
+        # Compute PRO separately using direct forward pass
         if not getattr(self, "skip_aupro", False):
             try:
-                engine_pred = self.get_engine(dataset, category, stage="predict")
-                predictions = engine_pred.predict(datamodule=datamodule, model=model)
+                from torch.nn.functional import interpolate
+
+                model.eval()
+                model.to(self.device)
+
+                datamodule.setup(stage="predict")
+                predict_loader = datamodule.predict_dataloader()
 
                 # Collect anomaly maps and gt masks
                 preds_list = []
                 targets_list = []
-                for batch in predictions:
-                    if "anomaly_map" in batch and batch["anomaly_map"] is not None:
-                        for i in range(len(batch["anomaly_map"])):
-                            amap = batch["anomaly_map"][i].cpu().numpy()
-                            if amap.ndim == 3:
-                                amap = amap[0]  # Remove channel dim
-                            preds_list.append(amap)
 
-                            if "gt_mask" in batch and batch["gt_mask"] is not None:
-                                gt = batch["gt_mask"][i].cpu().numpy()
-                                if gt.ndim == 3:
-                                    gt = gt[0]
-                                targets_list.append(gt)
+                with torch.no_grad():
+                    for batch in predict_loader:
+                        images = batch.image.to(self.device)
+                        outputs = model(images)
+
+                        anomaly_map = getattr(outputs, "anomaly_map", None)
+                        if anomaly_map is not None:
+                            # Resize to input size if needed
+                            if anomaly_map.shape[-2:] != images.shape[-2:]:
+                                anomaly_map = interpolate(anomaly_map, size=images.shape[-2:], mode="bilinear", align_corners=False)
+
+                            for i in range(len(anomaly_map)):
+                                amap = anomaly_map[i].cpu().numpy()
+                                if amap.ndim == 3:
+                                    amap = amap[0]  # Remove channel dim
+                                preds_list.append(amap)
+
+                                if batch.gt_mask is not None:
+                                    gt = batch.gt_mask[i].cpu().numpy()
+                                    if gt.ndim == 3:
+                                        gt = gt[0]
+                                    targets_list.append(gt)
 
                 if preds_list and targets_list:
                     preds_arr = np.array(preds_list)
@@ -431,7 +448,6 @@ class PatchCoreTrainer:
                     pro_score = self.compute_pro(preds_arr, targets_arr, num_thresholds=50)
                     metrics["PRO"] = pro_score
 
-                del engine_pred
             except Exception as e:
                 print(f"  PRO computation failed: {e}")
 
@@ -441,6 +457,10 @@ class PatchCoreTrainer:
         return metrics
 
     def predict(self, dataset: str, category: str, save_json: bool = None):
+        """Run inference using direct model forward pass (no Engine)."""
+        from anomalib.data.dataclasses import ImageBatch
+        from torch.nn.functional import interpolate
+
         ckpt_path = self.get_ckpt_path(dataset, category)
 
         if ckpt_path is None:
@@ -449,20 +469,86 @@ class PatchCoreTrainer:
 
         # Load model directly from checkpoint
         model = Patchcore.load_from_checkpoint(str(ckpt_path))
+        model.eval()
+        model.to(self.device)
 
         dm_kwargs = self.get_datamodule_kwargs()
         dm_kwargs["include_mask"] = True
         datamodule = self.loader.get_datamodule(dataset, category, **dm_kwargs)
 
-        engine = self.get_engine(dataset, category, stage="predict")
-        predictions = engine.predict(datamodule=datamodule, model=model)
+        datamodule.setup(stage="predict")
+        predict_loader = datamodule.predict_dataloader()
+
+        # Warmup (GPU/MPS initialization cost removal)
+        warmup_batch = next(iter(predict_loader))
+        with torch.no_grad():
+            _ = model(warmup_batch.image.to(self.device))
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        elif self.device.type == "mps":
+            torch.mps.synchronize()
+
+        # Pure inference (no Engine, measure forward pass only)
+        all_predictions = []
+        inference_time = 0.0
+        n_images = 0
+
+        with torch.no_grad():
+            for batch in predict_loader:
+                images = batch.image.to(self.device)
+                bs = images.shape[0]
+
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                elif self.device.type == "mps":
+                    torch.mps.synchronize()
+
+                t0 = time.perf_counter()
+                outputs = model(images)
+
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                elif self.device.type == "mps":
+                    torch.mps.synchronize()
+
+                inference_time += time.perf_counter() - t0
+                n_images += bs
+
+                anomaly_map = getattr(outputs, "anomaly_map", None)
+                pred_score = getattr(outputs, "pred_score", None)
+
+                # Resize anomaly map to input size if needed
+                if anomaly_map is not None and anomaly_map.shape[-2:] != images.shape[-2:]:
+                    anomaly_map = interpolate(anomaly_map, size=images.shape[-2:], mode="bilinear", align_corners=False)
+
+                pred_label = (pred_score > 0.5).int() if pred_score is not None else None
+                pred_mask = (anomaly_map > 0.5).int() if anomaly_map is not None else None
+
+                result = ImageBatch(
+                    image=images.cpu(),
+                    image_path=batch.image_path,
+                    gt_label=batch.gt_label if batch.gt_label is not None else None,
+                    gt_mask=batch.gt_mask if batch.gt_mask is not None else None,
+                    anomaly_map=anomaly_map.cpu() if anomaly_map is not None else None,
+                    pred_score=pred_score.cpu() if pred_score is not None else None,
+                    pred_label=pred_label.cpu() if pred_label is not None else None,
+                    pred_mask=pred_mask.cpu() if pred_mask is not None else None,
+                )
+                all_predictions.append(result)
+
+        # Store timing info for predict_all
+        self.last_inference_time = inference_time
+        self.last_n_images = n_images
 
         if save_json is None:
             save_json = self.output_config.get("save_json", False)
         if save_json:
-            self._save_predictions_json(predictions, dataset, category)
+            self._save_predictions_json(all_predictions, dataset, category)
 
-        return predictions
+        del model
+        self.cleanup_memory()
+
+        return all_predictions
 
     def _save_predictions_json(self, predictions, dataset: str, category: str):
         target_version = self.predict_config.get("version", None)
@@ -609,15 +695,21 @@ class PatchCoreTrainer:
         get_inference_logger().info(f"predict_all: {total} trained categories")
 
         all_predictions = {}
-        pbar = tqdm(categories, desc="Predicting", unit="category", ncols=100)
-        for dataset, category in pbar:
+        for idx, (dataset, category) in enumerate(categories, 1):
+            print(f"\n[{idx}/{total}] Predicting: {dataset}/{category}...")
+            self.last_inference_time = 0.0
+            self.last_n_images = 0
             key = f"{dataset}/{category}"
-            pbar.set_description(f"Predicting {key}")
-            start = time.time()
             all_predictions[key] = self.predict(dataset, category, save_json)
-            elapsed = time.time() - start
-            pbar.set_postfix_str(f"done ({elapsed:.1f}s)")
-            get_inference_logger().info(f"{key} done ({elapsed:.1f}s)")
+            infer_t = getattr(self, "last_inference_time", 0.0)
+            n_img = getattr(self, "last_n_images", 0)
+            ms_per_img = (infer_t / n_img * 1000) if n_img > 0 else 0
+            msg = (
+                f"[{idx}/{total}] {dataset}/{category} done "
+                f"(inference: {infer_t:.2f}s, {ms_per_img:.1f}ms/img)"
+            )
+            print(f"  {msg}")
+            get_inference_logger().info(msg)
 
         get_inference_logger().info(f"predict_all completed: {total} categories")
         return all_predictions

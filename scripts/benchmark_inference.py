@@ -165,10 +165,14 @@ def find_model_pairs(
 
                 ckpt = None
                 if version is not None:
+                    # Strict version: only use specified version, no fallback
                     candidate = category_dir / f"v{version}" / "model.ckpt"
                     if candidate.exists():
                         ckpt = candidate
+                    else:
+                        print(f"  Warning: v{version} not found for {dataset_dir.name}/{category_dir.name}, skipping")
                 else:
+                    # No version specified: use latest
                     versions = []
                     for v_dir in category_dir.iterdir():
                         if v_dir.is_dir() and v_dir.name.startswith("v"):
@@ -206,7 +210,7 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark inference speed")
     parser.add_argument("--checkpoint-dir", type=str, default="output")
     parser.add_argument("--onnx-dir", type=str, default="models/onnx")
-    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--config", type=str, default="configs/anomaly.yaml")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
@@ -267,6 +271,10 @@ def main():
         model_key = f"{dataset}/{category}"
         print(f"\n{'=' * 60}")
         print(f"Benchmarking: {model_key}")
+        if ckpt_path:
+            # Extract version from path (e.g., .../v1/model.ckpt -> v1)
+            version_name = ckpt_path.parent.name
+            print(f"  Checkpoint version: {version_name}")
         print("=" * 60)
 
         model_results = []
