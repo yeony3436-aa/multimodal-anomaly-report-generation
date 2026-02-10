@@ -1,0 +1,25 @@
+# --- Core Framework (FastAPI) ---
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9
+requests==2.32.3
+
+# --- Pydantic & Settings ---
+pydantic==2.8.2
+pydantic-settings==2.4.0
+jsonschema==4.23.0
+
+# --- Database (PostgreSQL & ORM) ---
+sqlalchemy
+psycopg2-binary
+python-dotenv
+
+# --- Computer Vision & AI ---
+numpy==2.1.1
+opencv-python==4.10.0.84
+pillow==10.4.0
+
+# --- Utilities & Dashboard ---
+pyyaml==6.0.2
+tqdm==4.66.5
+streamlit==1.37.1
