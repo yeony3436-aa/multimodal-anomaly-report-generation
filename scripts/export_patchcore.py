@@ -26,7 +26,7 @@ if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
 
-def find_patchcore_checkpoints(checkpoint_dir: Path) -> List[Tuple[str, str, Path]]:
+def find_patchcore_checkpoints(checkpoint_dir: Path, verbose: bool = False) -> List[Tuple[str, str, Path]]:
     """Find PatchCore checkpoints.
 
     Expected structure:
@@ -45,13 +45,20 @@ def find_patchcore_checkpoints(checkpoint_dir: Path) -> List[Tuple[str, str, Pat
         # Try without Patchcore subdirectory
         patchcore_dir = checkpoint_dir
 
-    for dataset_dir in patchcore_dir.iterdir():
+    if verbose:
+        print(f"[DEBUG] Searching in: {patchcore_dir}")
+
+    for dataset_dir in sorted(patchcore_dir.iterdir()):
         if not dataset_dir.is_dir() or dataset_dir.name.startswith("."):
             continue
         if dataset_dir.name in ["eval", "predictions", "Patchcore"]:
             continue
 
-        for category_dir in dataset_dir.iterdir():
+        if verbose:
+            print(f"[DEBUG] Dataset: {dataset_dir.name}")
+            print(f"[DEBUG]   Categories: {[c.name for c in dataset_dir.iterdir() if c.is_dir()]}")
+
+        for category_dir in sorted(dataset_dir.iterdir()):
             if not category_dir.is_dir() or category_dir.name.startswith("."):
                 continue
 
@@ -64,6 +71,9 @@ def find_patchcore_checkpoints(checkpoint_dir: Path) -> List[Tuple[str, str, Pat
                     except ValueError:
                         continue
 
+            if verbose:
+                print(f"[DEBUG]   {category_dir.name}: versions={[v[0] for v in versions]}")
+
             if not versions:
                 continue
 
@@ -72,6 +82,8 @@ def find_patchcore_checkpoints(checkpoint_dir: Path) -> List[Tuple[str, str, Pat
 
             if ckpt_path.exists():
                 checkpoints.append((dataset_dir.name, category_dir.name, ckpt_path))
+            elif verbose:
+                print(f"[DEBUG]     model.ckpt not found at: {ckpt_path}")
 
     return checkpoints
 
@@ -258,6 +270,11 @@ def main():
         action="store_true",
         help="Overwrite existing ONNX files",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show debug output for checkpoint discovery",
+    )
 
     args = parser.parse_args()
 
@@ -282,7 +299,7 @@ def main():
         print()
 
     # Find checkpoints
-    checkpoints = find_patchcore_checkpoints(checkpoint_dir)
+    checkpoints = find_patchcore_checkpoints(checkpoint_dir, verbose=args.verbose)
 
     if not checkpoints:
         print(f"No PatchCore checkpoints found in {checkpoint_dir}")
