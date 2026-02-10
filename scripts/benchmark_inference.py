@@ -1,27 +1,11 @@
-"""Benchmark inference speed for PatchCore models.
-
-Compare inference speed between:
-- Lightning checkpoint (.ckpt) - PyTorch
-- ONNX Runtime
-- TensorRT (if available)
+"""Benchmark inference speed: Checkpoint vs ONNX.
 
 Usage:
-    # Benchmark specific model
     python scripts/benchmark_inference.py \
-        --checkpoint output/Patchcore/GoodsAD/cigarette_box/v0/model.ckpt \
-        --onnx models/onnx/GoodsAD/cigarette_box/model.onnx
-
-    # Benchmark all models in directory
-    python scripts/benchmark_inference.py \
-        --checkpoint-dir output/Patchcore \
-        --onnx-dir models/onnx
-
-    # Adjust iterations for more accurate measurement
-    python scripts/benchmark_inference.py \
-        --checkpoint-dir output/Patchcore \
+        --checkpoint-dir /path/to/checkpoints \
         --onnx-dir models/onnx \
-        --warmup 10 \
-        --iterations 100
+        --config configs/anomaly.yaml \
+        --device cuda
 """
 from __future__ import annotations
 
@@ -31,7 +15,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -43,54 +27,30 @@ if str(PROJ_ROOT) not in sys.path:
 
 @dataclass
 class BenchmarkResult:
-    """Result of a benchmark run."""
+    """Benchmark result."""
     name: str
     mean_ms: float
     std_ms: float
     min_ms: float
     max_ms: float
     throughput: float  # images/second
-    total_time_s: float = 0.0  # total benchmark time in seconds
-    memory_mb: Optional[float] = None
+    total_time_s: float = 0.0
 
     def __str__(self) -> str:
         return (
             f"{self.name}: {self.mean_ms:.2f} ± {self.std_ms:.2f} ms "
-            f"(min: {self.min_ms:.2f}, max: {self.max_ms:.2f}) "
-            f"[{self.throughput:.1f} img/s, total: {self.total_time_s:.1f}s]"
+            f"[{self.throughput:.1f} img/s]"
         )
 
 
-def get_memory_usage_mb() -> float:
-    """Get current process memory usage in MB."""
-    try:
-        import psutil
-        process = psutil.Process()
-        return process.memory_info().rss / 1024 / 1024
-    except ImportError:
-        return 0.0
-
-
 def benchmark_function(
-    func: Callable,
+    func,
     input_data: np.ndarray,
     warmup: int = 5,
     iterations: int = 50,
     name: str = "Unknown",
 ) -> BenchmarkResult:
-    """Benchmark a function with given input.
-
-    Args:
-        func: Function to benchmark (should accept input_data and return result)
-        input_data: Input data to pass to function
-        warmup: Number of warmup iterations
-        iterations: Number of timed iterations
-        name: Name for this benchmark
-
-    Returns:
-        BenchmarkResult with timing statistics
-    """
-    # Track total time including warmup
+    """Benchmark a function."""
     total_start = time.perf_counter()
 
     # Warmup
@@ -105,13 +65,10 @@ def benchmark_function(
         start = time.perf_counter()
         _ = func(input_data)
         end = time.perf_counter()
-        times.append((end - start) * 1000)  # Convert to ms
+        times.append((end - start) * 1000)
 
-    total_end = time.perf_counter()
-    total_time_s = total_end - total_start
-
+    total_time = time.perf_counter() - total_start
     times = np.array(times)
-    memory_mb = get_memory_usage_mb()
 
     return BenchmarkResult(
         name=name,
@@ -119,23 +76,15 @@ def benchmark_function(
         std_ms=float(times.std()),
         min_ms=float(times.min()),
         max_ms=float(times.max()),
-        throughput=1000.0 / times.mean(),  # images per second
-        total_time_s=total_time_s,
-        memory_mb=memory_mb,
+        throughput=1000.0 / times.mean(),
+        total_time_s=total_time,
     )
 
 
-def load_checkpoint_model(checkpoint_path: Path, device: str = "cpu", input_size: Tuple[int, int] = (224, 224)):
-    """Load PatchCore model from Lightning checkpoint.
-
-    Returns:
-        Model object and predict function
-    """
-    try:
-        import torch
-        from anomalib.models import Patchcore
-    except ImportError as e:
-        raise ImportError(f"anomalib or torch not installed: {e}")
+def load_checkpoint_model(checkpoint_path: Path, device: str, input_size: Tuple[int, int]):
+    """Load PatchCore from checkpoint."""
+    import torch
+    from anomalib.models import Patchcore
 
     print(f"  Loading checkpoint: {checkpoint_path}")
     model = Patchcore.load_from_checkpoint(str(checkpoint_path), map_location="cpu")
@@ -143,15 +92,10 @@ def load_checkpoint_model(checkpoint_path: Path, device: str = "cpu", input_size
 
     if device == "cuda" and torch.cuda.is_available():
         model = model.cuda()
-    else:
-        model = model.cpu()
 
     def predict_fn(image: np.ndarray):
-        """Predict function for checkpoint model."""
         import cv2
-
-        # Preprocess
-        img = cv2.resize(image, (input_size[1], input_size[0]))  # cv2 uses (width, height)
+        img = cv2.resize(image, (input_size[1], input_size[0]))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = img.astype(np.float32) / 255.0
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -165,87 +109,30 @@ def load_checkpoint_model(checkpoint_path: Path, device: str = "cpu", input_size
             if device == "cuda" and torch.cuda.is_available():
                 tensor = tensor.cuda()
             output = model(tensor)
-
         return output
 
     return model, predict_fn
 
 
-def load_onnx_model(onnx_path: Path, device: str = "cpu"):
-    """Load PatchCore ONNX model.
+def load_onnx_model(model_dir: Path, device: str):
+    """Load PatchCore ONNX (backbone + memory bank)."""
+    from src.anomaly import PatchCoreOnnx
 
-    Returns:
-        Session and predict function
-    """
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        raise ImportError("onnxruntime not installed. Install with: pip install onnxruntime")
+    print(f"  Loading ONNX: {model_dir}")
 
-    print(f"  Loading ONNX: {onnx_path}")
-
-    # Set providers
-    if device == "cuda":
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    else:
-        providers = ["CPUExecutionProvider"]
-
-    sess_options = ort.SessionOptions()
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-    session = ort.InferenceSession(
-        str(onnx_path),
-        sess_options=sess_options,
-        providers=providers,
+    model = PatchCoreOnnx(
+        model_path=model_dir,
+        device=device,
     )
+    model.load_model()
 
-    input_info = session.get_inputs()[0]
-    input_name = input_info.name
-    output_names = [o.name for o in session.get_outputs()]
-
-    # Get input size from ONNX model (shape: [batch, channels, height, width])
-    input_shape = input_info.shape
-    onnx_height = input_shape[2] if isinstance(input_shape[2], int) else 224
-    onnx_width = input_shape[3] if isinstance(input_shape[3], int) else 224
-    print(f"  ONNX input size: {onnx_height}x{onnx_width}")
+    input_size = model.input_size
+    print(f"  Input size: {input_size}")
 
     def predict_fn(image: np.ndarray):
-        """Predict function for ONNX model."""
-        import cv2
+        return model.predict(image)
 
-        # Preprocess - use size from ONNX model
-        img = cv2.resize(image, (onnx_width, onnx_height))  # cv2 uses (width, height)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        img = (img - mean) / std
-        img = img.transpose(2, 0, 1)
-        img = np.expand_dims(img, axis=0).astype(np.float32)
-
-        outputs = session.run(output_names, {input_name: img})
-        return outputs
-
-    return session, predict_fn
-
-
-def load_tensorrt_model(tensorrt_path: Path, device: str = "cuda"):
-    """Load TensorRT engine.
-
-    Returns:
-        Engine and predict function
-    """
-    try:
-        import tensorrt as trt
-        import pycuda.driver as cuda
-        import pycuda.autoinit
-    except ImportError:
-        raise ImportError("TensorRT or pycuda not installed")
-
-    print(f"  Loading TensorRT: {tensorrt_path}")
-
-    # TensorRT loading is more complex, implement as needed
-    raise NotImplementedError("TensorRT benchmark not yet implemented")
+    return model, predict_fn, input_size
 
 
 def find_model_pairs(
@@ -255,22 +142,10 @@ def find_model_pairs(
     datasets: List[str] | None = None,
     categories: List[str] | None = None,
 ) -> List[Tuple[str, str, Optional[Path], Optional[Path]]]:
-    """Find matching checkpoint and ONNX model pairs.
-
-    Args:
-        checkpoint_dir: Directory containing checkpoints
-        onnx_dir: Directory containing ONNX models
-        version: Specific version to use (None = latest)
-        datasets: Filter by dataset names
-        categories: Filter by category names
-
-    Returns:
-        List of (dataset, category, checkpoint_path, onnx_path)
-    """
+    """Find matching checkpoint and ONNX model pairs."""
     pairs = []
     seen = set()
 
-    # Find checkpoints
     patchcore_dir = checkpoint_dir / "Patchcore" if (checkpoint_dir / "Patchcore").exists() else checkpoint_dir
 
     if patchcore_dir.exists():
@@ -289,15 +164,11 @@ def find_model_pairs(
                     continue
 
                 ckpt = None
-
-                # If specific version requested
                 if version is not None:
-                    ver_dir = category_dir / f"v{version}"
-                    candidate = ver_dir / "model.ckpt"
+                    candidate = category_dir / f"v{version}" / "model.ckpt"
                     if candidate.exists():
                         ckpt = candidate
                 else:
-                    # Find latest version
                     versions = []
                     for v_dir in category_dir.iterdir():
                         if v_dir.is_dir() and v_dir.name.startswith("v"):
@@ -305,7 +176,6 @@ def find_model_pairs(
                                 versions.append((int(v_dir.name[1:]), v_dir))
                             except ValueError:
                                 continue
-
                     if versions:
                         latest = max(versions, key=lambda x: x[0])[1]
                         candidate = latest / "model.ckpt"
@@ -316,245 +186,79 @@ def find_model_pairs(
                     key = (dataset_dir.name, category_dir.name)
                     if key not in seen:
                         seen.add(key)
-                        onnx_path = onnx_dir / dataset_dir.name / category_dir.name / "model.onnx"
+                        onnx_path = onnx_dir / dataset_dir.name / category_dir.name
                         pairs.append((
                             dataset_dir.name,
                             category_dir.name,
                             ckpt,
-                            onnx_path if onnx_path.exists() else None,
+                            onnx_path if (onnx_path / "backbone.onnx").exists() else None,
                         ))
 
-    # Find ONNX models without checkpoints
-    if onnx_dir.exists():
-        for dataset_dir in sorted(onnx_dir.iterdir()):
-            if not dataset_dir.is_dir():
-                continue
-            if datasets and dataset_dir.name not in datasets:
-                continue
-            for category_dir in sorted(dataset_dir.iterdir()):
-                if not category_dir.is_dir():
-                    continue
-                if categories and category_dir.name not in categories:
-                    continue
-                onnx_path = category_dir / "model.onnx"
-                if onnx_path.exists():
-                    key = (dataset_dir.name, category_dir.name)
-                    if key not in seen:
-                        seen.add(key)
-                        pairs.append((dataset_dir.name, category_dir.name, None, onnx_path))
-
-    return sorted(pairs, key=lambda x: (x[0], x[1]))
+    return sorted(pairs)
 
 
-def create_dummy_image(size: Tuple[int, int] = (512, 512)) -> np.ndarray:
-    """Create a dummy BGR image for benchmarking."""
+def create_dummy_image(size: Tuple[int, int] = (700, 700)) -> np.ndarray:
+    """Create dummy BGR image."""
     return np.random.randint(0, 255, (*size, 3), dtype=np.uint8)
 
 
-def print_results_table(results: Dict[str, List[BenchmarkResult]]):
-    """Print results in a formatted table."""
-    print()
-    print("=" * 115)
-    print("BENCHMARK RESULTS")
-    print("=" * 115)
-
-    # Header
-    print(f"{'Model':<35} {'Format':<12} {'Mean (ms)':<12} {'Std (ms)':<10} "
-          f"{'Throughput':<12} {'Total (s)':<10} {'Speedup':<10}")
-    print("-" * 115)
-
-    for model_key, model_results in results.items():
-        base_time = None
-
-        for i, result in enumerate(model_results):
-            if i == 0:
-                base_time = result.mean_ms
-
-            speedup = base_time / result.mean_ms if base_time else 1.0
-            speedup_str = f"{speedup:.2f}x" if speedup != 1.0 else "baseline"
-
-            if i == 0:
-                print(f"{model_key:<35} {result.name:<12} {result.mean_ms:<12.2f} "
-                      f"{result.std_ms:<10.2f} {result.throughput:<12.1f} "
-                      f"{result.total_time_s:<10.1f} {speedup_str:<10}")
-            else:
-                print(f"{'':<35} {result.name:<12} {result.mean_ms:<12.2f} "
-                      f"{result.std_ms:<10.2f} {result.throughput:<12.1f} "
-                      f"{result.total_time_s:<10.1f} {speedup_str:<10}")
-
-        print()
-
-    print("=" * 115)
-
-
-def print_summary(results: Dict[str, List[BenchmarkResult]]):
-    """Print summary statistics."""
-    all_ckpt = []
-    all_onnx = []
-    total_ckpt_time = 0.0
-    total_onnx_time = 0.0
-
-    for model_results in results.values():
-        for result in model_results:
-            if "ckpt" in result.name.lower() or "checkpoint" in result.name.lower():
-                all_ckpt.append(result.mean_ms)
-                total_ckpt_time += result.total_time_s
-            elif "onnx" in result.name.lower():
-                all_onnx.append(result.mean_ms)
-                total_onnx_time += result.total_time_s
-
-    print("\nSUMMARY")
-    print("-" * 50)
-
-    if all_ckpt:
-        print(f"Checkpoint: {np.mean(all_ckpt):.2f} ms/img ({1000/np.mean(all_ckpt):.1f} img/s), total {total_ckpt_time:.1f}s")
-    if all_onnx:
-        print(f"ONNX:       {np.mean(all_onnx):.2f} ms/img ({1000/np.mean(all_onnx):.1f} img/s), total {total_onnx_time:.1f}s")
-
-    if all_ckpt and all_onnx:
-        speedup = np.mean(all_ckpt) / np.mean(all_onnx)
-        print(f"Average speedup: {speedup:.2f}x")
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark PatchCore inference speed")
-
-    # Single model options
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default=None,
-        help="Path to single checkpoint file",
-    )
-    parser.add_argument(
-        "--onnx",
-        type=str,
-        default=None,
-        help="Path to single ONNX file",
-    )
-
-    # Directory options
-    parser.add_argument(
-        "--checkpoint-dir",
-        type=str,
-        default="output",
-        help="Directory containing checkpoints",
-    )
-    parser.add_argument(
-        "--onnx-dir",
-        type=str,
-        default="models/onnx",
-        help="Directory containing ONNX models",
-    )
-
-    # Benchmark options
-    parser.add_argument(
-        "--warmup",
-        type=int,
-        default=5,
-        help="Number of warmup iterations",
-    )
-    parser.add_argument(
-        "--iterations",
-        type=int,
-        default=50,
-        help="Number of benchmark iterations",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        choices=["cpu", "cuda"],
-        help="Device for inference",
-    )
-    parser.add_argument(
-        "--image-size",
-        type=int,
-        nargs=2,
-        default=[512, 512],
-        help="Input image size for benchmark",
-    )
-    parser.add_argument(
-        "--max-models",
-        type=int,
-        default=None,
-        help="Maximum number of models to benchmark",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Config file to read image_size from",
-    )
-
+    parser = argparse.ArgumentParser(description="Benchmark inference speed")
+    parser.add_argument("--checkpoint-dir", type=str, default="output")
+    parser.add_argument("--onnx-dir", type=str, default="models/onnx")
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--iterations", type=int, default=50)
+    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--max-models", type=int, default=None)
     args = parser.parse_args()
 
-    # Load config if provided
-    model_input_size = tuple(args.image_size)
+    # Load config
     config_version = None
     config_datasets = None
     config_categories = None
+    input_size = (700, 700)
 
     if args.config:
         from src.utils.loaders import load_config
         config = load_config(args.config)
-        config_image_size = config.get("data", {}).get("image_size", None)
-        config_version = config.get("predict", {}).get("version", None)
-        config_datasets = config.get("data", {}).get("datasets", None)
-        config_categories = config.get("data", {}).get("categories", None)
+        config_datasets = config.get("data", {}).get("datasets")
+        config_categories = config.get("data", {}).get("categories")
+        config_version = config.get("predict", {}).get("version")
+        config_input_size = config.get("data", {}).get("image_size")
+        if config_input_size:
+            input_size = tuple(config_input_size)
 
-        if config_image_size:
-            model_input_size = tuple(config_image_size)
-
-        print(f"Using config: {args.config}")
-        print(f"  image_size: {model_input_size}")
-        print(f"  version: v{config_version}" if config_version is not None else "  version: auto (latest)")
-        print(f"  datasets: {config_datasets}")
-        print(f"  categories: {config_categories}")
+        print(f"Config: {args.config}")
+        print(f"  Input size: {input_size}")
+        print(f"  Version: v{config_version}" if config_version else "  Version: latest")
         print()
 
-    # Prepare model pairs
-    if args.checkpoint or args.onnx:
-        # Single model mode
-        checkpoint_path = Path(args.checkpoint) if args.checkpoint else None
-        onnx_path = Path(args.onnx) if args.onnx else None
+    # Find models
+    checkpoint_dir = Path(args.checkpoint_dir)
+    onnx_dir = Path(args.onnx_dir)
 
-        if checkpoint_path and not checkpoint_path.exists():
-            print(f"Error: Checkpoint not found: {checkpoint_path}")
-            sys.exit(1)
-        if onnx_path and not onnx_path.exists():
-            print(f"Error: ONNX file not found: {onnx_path}")
-            sys.exit(1)
-
-        model_pairs = [("single", "model", checkpoint_path, onnx_path)]
-    else:
-        # Directory mode
-        checkpoint_dir = Path(args.checkpoint_dir)
-        onnx_dir = Path(args.onnx_dir)
-
-        model_pairs = find_model_pairs(
-            checkpoint_dir,
-            onnx_dir,
-            version=config_version,
-            datasets=config_datasets,
-            categories=config_categories,
-        )
-
-        if not model_pairs:
-            print("No models found. Check --checkpoint-dir and --onnx-dir paths.")
-            sys.exit(1)
+    model_pairs = find_model_pairs(
+        checkpoint_dir, onnx_dir,
+        version=config_version,
+        datasets=config_datasets,
+        categories=config_categories,
+    )
 
     if args.max_models:
         model_pairs = model_pairs[:args.max_models]
 
-    print(f"Found {len(model_pairs)} model(s) to benchmark")
-    print(f"Warmup: {args.warmup}, Iterations: {args.iterations}")
+    if not model_pairs:
+        print("No models found!")
+        return
+
+    print(f"Found {len(model_pairs)} model(s)")
     print(f"Device: {args.device}")
-    print(f"Model input size: {model_input_size[0]}x{model_input_size[1]}")
+    print(f"Warmup: {args.warmup}, Iterations: {args.iterations}")
     print()
 
-    # Create dummy input (larger than model input, will be resized)
-    dummy_image = create_dummy_image((max(model_input_size[0], 512), max(model_input_size[1], 512)))
+    # Create dummy image
+    dummy_image = create_dummy_image(input_size)
 
     # Run benchmarks
     all_results: Dict[str, List[BenchmarkResult]] = {}
@@ -570,10 +274,9 @@ def main():
         # Benchmark checkpoint
         if ckpt_path:
             try:
-                model, predict_fn = load_checkpoint_model(ckpt_path, args.device, input_size=model_input_size)
+                model, predict_fn = load_checkpoint_model(ckpt_path, args.device, input_size)
                 result = benchmark_function(
-                    predict_fn,
-                    dummy_image,
+                    predict_fn, dummy_image,
                     warmup=args.warmup,
                     iterations=args.iterations,
                     name="Checkpoint",
@@ -581,16 +284,11 @@ def main():
                 model_results.append(result)
                 print(f"  {result}")
 
-                # Clean up
                 del model, predict_fn
                 gc.collect()
-
-                try:
+                if args.device == "cuda":
                     import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except ImportError:
-                    pass
+                    torch.cuda.empty_cache()
 
             except Exception as e:
                 print(f"  Checkpoint failed: {e}")
@@ -598,10 +296,9 @@ def main():
         # Benchmark ONNX
         if onnx_path:
             try:
-                session, predict_fn = load_onnx_model(onnx_path, args.device)
+                model, predict_fn, _ = load_onnx_model(onnx_path, args.device)
                 result = benchmark_function(
-                    predict_fn,
-                    dummy_image,
+                    predict_fn, dummy_image,
                     warmup=args.warmup,
                     iterations=args.iterations,
                     name="ONNX",
@@ -609,8 +306,7 @@ def main():
                 model_results.append(result)
                 print(f"  {result}")
 
-                # Clean up
-                del session, predict_fn
+                del model, predict_fn
                 gc.collect()
 
             except Exception as e:
@@ -619,12 +315,51 @@ def main():
         if model_results:
             all_results[model_key] = model_results
 
-    # Print results table
+    # Print summary
     if all_results:
-        print_results_table(all_results)
-        print_summary(all_results)
-    else:
-        print("\nNo successful benchmarks to report.")
+        print("\n" + "=" * 80)
+        print("RESULTS SUMMARY")
+        print("=" * 80)
+        print(f"{'Model':<30} {'Checkpoint':>15} {'ONNX':>15} {'Speedup':>10}")
+        print("-" * 80)
+
+        all_ckpt_times = []
+        all_onnx_times = []
+
+        for model_key, results in all_results.items():
+            ckpt_time = None
+            onnx_time = None
+
+            for r in results:
+                if r.name == "Checkpoint":
+                    ckpt_time = r.mean_ms
+                    all_ckpt_times.append(ckpt_time)
+                elif r.name == "ONNX":
+                    onnx_time = r.mean_ms
+                    all_onnx_times.append(onnx_time)
+
+            ckpt_str = f"{ckpt_time:.2f} ms" if ckpt_time else "N/A"
+            onnx_str = f"{onnx_time:.2f} ms" if onnx_time else "N/A"
+
+            if ckpt_time and onnx_time:
+                speedup = ckpt_time / onnx_time
+                speedup_str = f"{speedup:.2f}x"
+            else:
+                speedup_str = "N/A"
+
+            print(f"{model_key:<30} {ckpt_str:>15} {onnx_str:>15} {speedup_str:>10}")
+
+        print("-" * 80)
+
+        if all_ckpt_times:
+            avg_ckpt = np.mean(all_ckpt_times)
+            print(f"{'Average Checkpoint':<30} {avg_ckpt:>14.2f} ms")
+        if all_onnx_times:
+            avg_onnx = np.mean(all_onnx_times)
+            print(f"{'Average ONNX':<30} {' ':>15} {avg_onnx:>14.2f} ms")
+        if all_ckpt_times and all_onnx_times:
+            avg_speedup = np.mean(all_ckpt_times) / np.mean(all_onnx_times)
+            print(f"{'Average Speedup':<30} {' ':>30} {avg_speedup:>9.2f}x")
 
 
 if __name__ == "__main__":
