@@ -201,15 +201,14 @@ class Anomalibs:
             kwargs["num_workers"] = self.training_config["num_workers"]
         return kwargs
 
-    def get_engine(self, dataset: str = None, category: str = None, model=None, datamodule=None, stage: str = None, version_dir: Path = None, is_resume: bool = False):
-        # Anomalib의 ModelCheckpoint를 사용해야 _setup_anomalib_callbacks()에서 중복 추가 방지
+    def get_engine(self, dataset: str = None, category: str = None, model=None, datamodule=None, version_dir: Path = None, is_resume: bool = False):
+        """학습(fit) 전용 Engine 생성. predict는 Engine을 사용하지 않음."""
         from anomalib.callbacks.checkpoint import ModelCheckpoint
 
-        # WandB logger 설정 (predict 시에는 비활성화)
+        # WandB logger 설정
         logger_config = self.engine_config.get("logger", False)
         if logger_config == "wandb":
-            if stage == "predict" or not (dataset and category):
-                # predict 또는 dataset/category 없으면 wandb 비활성화
+            if not (dataset and category):
                 logger_config = False
             else:
                 from pytorch_lightning.loggers import WandbLogger
@@ -218,7 +217,6 @@ class Anomalibs:
                 import torch
                 gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
 
-                # batch_size 추출
                 batch_size = self.training_config.get("train_batch_size")
                 if batch_size is None and datamodule is not None:
                     batch_size = getattr(datamodule, "train_batch_size", None)
@@ -232,7 +230,6 @@ class Anomalibs:
                 train_data = getattr(datamodule, "train_data", None)
                 num_train_img = len(train_data) if train_data is not None else 0
 
-                # run_name 조합: {dataset}_{category} 또는 {dataset}_{category}_{custom}
                 wandb_config = self.config.get("wandb", {})
                 custom_name = wandb_config.get("run_name")
                 if custom_name:
@@ -240,10 +237,8 @@ class Anomalibs:
                 else:
                     run_name = f"{dataset}_{category}"
 
-                # Early Stopping 설정 추출
                 es_config = self.training_config.get("early_stopping", {})
 
-                # 모델별 하이퍼파라미터 (yaml null이면 Anomalib default 사용)
                 model_hparams = {}
                 raw_model_params = self.config["anomaly"].get(self.model_name, {})
                 if self.model_name == "patchcore":
@@ -272,28 +267,23 @@ class Anomalibs:
         enable_progress = self.engine_config.get("enable_progress_bar", False)
         callbacks = [] if enable_progress else [EpochProgressCallback()]
 
-        # --- Custom Callbacks for Checkpoint and Visualizer ---
-
-        # 1. ModelCheckpoint Callback - predict 시에는 불필요
-        if dataset and category and stage != "predict" and version_dir:
+        # ModelCheckpoint Callback
+        if dataset and category and version_dir:
             checkpoint_dir = version_dir
-            # version_dir는 fit()에서 이미 생성됨
 
             monitor_cfg = self.MODEL_METRICS.get(
                 self.model_name, {"monitor": "image_AUROC", "mode": "max"}
             )
 
-            # PatchCore/WinCLIP: monitor=None이면 매 epoch 저장 (1 epoch만 학습)
             if monitor_cfg["monitor"] is None:
                 model_checkpoint_callback = ModelCheckpoint(
                     dirpath=str(checkpoint_dir),
                     filename="model",
-                    save_top_k=-1,  # 모든 checkpoint 저장
+                    save_top_k=-1,
                     every_n_epochs=1,
                     auto_insert_metric_name=False,
                 )
             else:
-                # EfficientAd: metric 기반 best model 저장
                 model_checkpoint_callback = ModelCheckpoint(
                     dirpath=str(checkpoint_dir),
                     filename="model",
@@ -304,48 +294,15 @@ class Anomalibs:
                     auto_insert_metric_name=False,
                 )
             callbacks.append(model_checkpoint_callback)
-        # If dataset/category not available, default ModelCheckpoint might still be added by Anomalib.
-        # Or, if this is a predict-only scenario without training, no checkpoint is needed.
 
-        # Visualizer Callback (yaml에서 visualizer: true일 때만)
-        visualizer_enabled = self.model_params.get("visualizer", False)
-        if visualizer_enabled and stage == "predict" and dataset and category:
-            try:
-                # Anomalib 버전에 따라 import 경로가 다름
-                try:
-                    from anomalib.callbacks import ImageVisualizerCallback as VisualizerCallback
-                except ImportError:
-                    try:
-                        from anomalib.utils.callbacks import ImageVisualizerCallback as VisualizerCallback
-                    except ImportError:
-                        VisualizerCallback = None
-
-                if VisualizerCallback:
-                    image_save_path = (
-                        self.output_root
-                        / self.MODEL_DIR_MAP.get(self.model_name, self.model_name.capitalize())
-                        / dataset
-                        / category
-                        / "predictions"
-                    )
-                    image_save_path.mkdir(parents=True, exist_ok=True)
-                    callbacks.append(VisualizerCallback(image_save_path=str(image_save_path)))
-            except Exception as e:
-                logger.warning(f"Visualizer callback not available: {e}")
-
-        # 3. Early Stopping Callback (fit 시에만, 특정 모델만)
-        # PatchCore: memory-bank 기반, 1 epoch만 학습 → early stopping 불필요
-        # WinCLIP: zero-shot, 학습 없음 → early stopping 불필요
-        # EfficientAd: iterative 학습 → early stopping 유용
+        # Early Stopping Callback (특정 모델만)
         early_stop_config = self.training_config.get("early_stopping", {})
-        models_need_early_stopping = ["efficientad"]  # early stopping이 유용한 모델 목록
+        models_need_early_stopping = ["efficientad"]
 
         if (
             early_stop_config.get("enabled", False)
-            and stage != "predict"
             and self.model_name in models_need_early_stopping
         ):
-            # 모델별 메트릭 설정 사용 (checkpoint와 동일하게)
             model_metric = self.MODEL_METRICS.get(
                 self.model_name, {"monitor": "image_AUROC", "mode": "max"}
             )
@@ -357,17 +314,16 @@ class Anomalibs:
                 patience=early_stop_config.get("patience", 10),
                 mode=es_mode,
                 verbose=True,
-                check_on_train_epoch_end=True,  # validation이 아닌 train epoch 후 체크
+                check_on_train_epoch_end=True,
             )
             callbacks.append(early_stopping_callback)
 
-            # Early Stopping 추적 콜백 추가 (wandb 로깅용)
             callbacks.append(EarlyStoppingTracker(early_stop_config))
             get_train_logger().info(
                 f"Early Stopping enabled: monitor={es_monitor}, "
                 f"patience={early_stop_config.get('patience')}, mode={es_mode}"
             )
-        elif early_stop_config.get("enabled", False) and self.model_name not in models_need_early_stopping and stage != "predict":
+        elif early_stop_config.get("enabled", False) and self.model_name not in models_need_early_stopping:
             get_train_logger().info(f"Early Stopping skipped: {self.model_name} doesn't need iterative training")
 
         kwargs = {
@@ -382,7 +338,6 @@ class Anomalibs:
         if "max_epochs" in self.training_config:
             kwargs["max_epochs"] = self.training_config["max_epochs"]
 
-        # min_epochs 설정 (early stopping이 실제 적용되는 모델에만)
         if (
             early_stop_config.get("enabled", False)
             and early_stop_config.get("min_epochs")
@@ -559,52 +514,29 @@ class Anomalibs:
         return self
 
     def predict(self, dataset: str, category: str, save_json: bool = None):
+        from anomalib.data.dataclasses import ImageBatch
+        from torch.nn.functional import interpolate
+
         model = self.get_model()
         dm_kwargs = self.get_datamodule_kwargs()
         dm_kwargs["include_mask"] = True  # predict 시 GT mask 포함
         datamodule = self.loader.get_datamodule(dataset, category, **dm_kwargs)
         ckpt_path = self.get_ckpt_path(dataset, category)
 
-        # .pt 파일 (커스텀 torch.save 모델) 처리
+        # 모델 로드
         if ckpt_path is not None and ckpt_path.suffix == ".pt":
-            predictions = self.predict_from_pt(model, datamodule, ckpt_path)
-        else:
-            engine = self.get_engine(dataset, category, model=model, datamodule=datamodule, stage="predict")
+            get_inference_logger().info(f"Loading custom .pt model: {ckpt_path}")
+            pt_data = torch.load(ckpt_path, map_location=self.device, weights_only=False)
+            model.model.memory_bank = pt_data["memory_bank"].to(self.device)
+            model.model.coreset_sampling_ratio = pt_data.get("coreset_ratio", 0.1)
+            model.model.num_neighbors = pt_data.get("n_neighbors", 9)
+        elif ckpt_path is not None:
+            get_inference_logger().info(f"Loading checkpoint: {ckpt_path}")
+            model = model.__class__.load_from_checkpoint(str(ckpt_path))
 
-            # WinCLIP requires class name for text embeddings
-            if self.model_name == "winclip":
-                model.setup(class_name=category)
-
-            t0 = time.time()
-            predictions = engine.predict(
-                datamodule=datamodule,
-                model=model,
-                ckpt_path=ckpt_path,
-            )
-            self.last_inference_time = time.time() - t0
-            self.last_n_images = sum(len(b.image_path) for b in predictions)
-
-        # save json
-        if save_json is None:
-            save_json = self.output_config.get("save_json", False)
-        if save_json:
-            self.save_predictions_json(predictions, dataset, category)
-
-        return predictions
-
-    def predict_from_pt(self, model, datamodule, pt_path: Path):
-        """커스텀 torch.save() .pt 파일로부터 PatchCore predict 수행."""
-        from anomalib.data.dataclasses import ImageBatch
-        from torch.nn.functional import interpolate
-
-        get_inference_logger().info(f"Loading custom .pt model: {pt_path}")
-        pt_data = torch.load(pt_path, map_location=self.device, weights_only=False)
-
-        # PatchCore 모델에 memory bank 주입
-        memory_bank = pt_data["memory_bank"].to(self.device)
-        model.model.memory_bank = memory_bank
-        model.model.coreset_sampling_ratio = pt_data.get("coreset_ratio", 0.1)
-        model.model.num_neighbors = pt_data.get("n_neighbors", 9)
+        # WinCLIP requires class name for text embeddings
+        if self.model_name == "winclip":
+            model.setup(class_name=category)
 
         model.eval()
         model.to(self.device)
@@ -612,22 +544,44 @@ class Anomalibs:
         datamodule.setup(stage="predict")
         predict_loader = datamodule.predict_dataloader()
 
+        # Warmup (GPU/MPS 초기화 비용 제거)
+        warmup_batch = next(iter(predict_loader))
+        with torch.no_grad():
+            _ = model(warmup_batch.image.to(self.device))
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        elif self.device.type == "mps":
+            torch.mps.synchronize()
+
+        # 순수 inference (Engine 미사용, forward pass만 측정)
         all_predictions = []
         inference_time = 0.0
         n_images = 0
+
         with torch.no_grad():
             for batch in predict_loader:
                 images = batch.image.to(self.device)
+                bs = images.shape[0]
 
-                t0 = time.time()
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                elif self.device.type == "mps":
+                    torch.mps.synchronize()
+
+                t0 = time.perf_counter()
                 outputs = model(images)
-                inference_time += time.time() - t0
-                n_images += images.shape[0]
+
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                elif self.device.type == "mps":
+                    torch.mps.synchronize()
+
+                inference_time += time.perf_counter() - t0
+                n_images += bs
 
                 anomaly_map = getattr(outputs, "anomaly_map", None)
                 pred_score = getattr(outputs, "pred_score", None)
 
-                # anomaly_map 크기를 이미지 크기에 맞춤
                 if anomaly_map is not None and anomaly_map.shape[-2:] != images.shape[-2:]:
                     anomaly_map = interpolate(anomaly_map, size=images.shape[-2:], mode="bilinear", align_corners=False)
 
@@ -648,6 +602,13 @@ class Anomalibs:
 
         self.last_inference_time = inference_time
         self.last_n_images = n_images
+
+        # save json
+        if save_json is None:
+            save_json = self.output_config.get("save_json", False)
+        if save_json:
+            self.save_predictions_json(all_predictions, dataset, category)
+
         return all_predictions
 
     def get_mask_path(self, image_path: str, dataset: str) -> str | None:
@@ -814,7 +775,12 @@ class Anomalibs:
             all_predictions[key] = self.predict(dataset, category, save_json)
             elapsed = time.time() - start
             infer_t = self.last_inference_time
-            msg = f"[{idx}/{total}] {dataset}/{category} done ({elapsed:.1f}s, inference: {infer_t:.1f}s)"
+            n_img = self.last_n_images
+            ms_per_img = (infer_t / n_img * 1000) if n_img > 0 else 0
+            msg = (
+                f"[{idx}/{total}] {dataset}/{category} done "
+                f"(inference: {infer_t:.2f}s, {ms_per_img:.1f}ms/img)"
+            )
             print(f"✓ {msg}")
             get_inference_logger().info(msg)
 
