@@ -9,7 +9,6 @@ import { AnomalyQueuePage } from "./pages/AnomalyQueuePage";
 import { CaseDetailPage } from "./pages/CaseDetailPage";
 import { ReportBuilderPage } from "./pages/ReportBuilderPage";
 import { SettingsPage } from "./pages/SettingsPage";
-// ❌ 제거: import { ReportsPage } from "./pages/ReportsPage";
 
 // data & utils
 import { mapReportsToAnomalyCases } from "./data/reportMapper";
@@ -165,19 +164,13 @@ export default function App() {
           <OverviewPage
             cases={filteredCases}
             alerts={alerts}
-            filters={filters}
             activeModel={activeModel}
-            onCaseClick={handleCaseClick}
-            onFilterUpdate={(newFilters) =>
-              setFilters((prev) => ({ ...prev, ...newFilters }))
-            }
           />
         );
       case "queue":
         return <AnomalyQueuePage cases={filteredCases} onCaseClick={handleCaseClick} />;
       case "report":
         return <ReportBuilderPage cases={filteredCases} />;
-      // ❌ 제거: case "llava": return <ReportsPage />;
       case "settings":
         return (
           <SettingsPage
@@ -194,12 +187,7 @@ export default function App() {
           <OverviewPage
             cases={filteredCases}
             alerts={alerts}
-            filters={filters}
             activeModel={activeModel}
-            onCaseClick={handleCaseClick}
-            onFilterUpdate={(newFilters) =>
-              setFilters((prev) => ({ ...prev, ...newFilters }))
-            }
           />
         );
     }
@@ -209,7 +197,8 @@ export default function App() {
     <div className="flex h-screen bg-gray-50">
       <Sidebar currentPage={currentPage} onNavigate={handleNavigate} />
       <div className="flex-1 flex flex-col overflow-hidden">
-        {(currentPage === "overview" || currentPage === "queue") && (
+        {/* ✅ 운영 리포트(report)에서도 FilterBar 보이게 확장 */}
+        {(currentPage === "overview" || currentPage === "queue" || currentPage === "report") && (
           <FilterBar filters={filters} onFilterChange={(next) => setFilters(next)} />
         )}
         <div className="flex-1 overflow-y-auto">{renderPage()}</div>
