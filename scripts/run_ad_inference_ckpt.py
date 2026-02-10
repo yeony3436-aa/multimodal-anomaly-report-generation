@@ -394,7 +394,11 @@ def main():
             continue
 
         try:
+            # Time image loading
+            t_load = time.perf_counter()
             image = cv2.imread(str(image_full_path))
+            load_time = time.perf_counter() - t_load
+
             if image is None:
                 errors += 1
                 continue
@@ -402,7 +406,12 @@ def main():
             # Run inference
             t0 = time.perf_counter()
             result = model_manager.predict(dataset, category, image)
-            total_inference_time += time.perf_counter() - t0
+            infer_time = time.perf_counter() - t0
+            total_inference_time += infer_time
+
+            # Print timing for first 5 images
+            if processed < 5:
+                print(f"  [{image_path}] load: {load_time*1000:.0f}ms, infer: {infer_time*1000:.0f}ms")
 
             # Build output dict
             result_dict = {
