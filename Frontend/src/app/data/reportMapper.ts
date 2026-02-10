@@ -1,47 +1,11 @@
-// src/app/data/llavaMapper.ts
+// src/app/data/reportMapper.ts
 import type { AnomalyCase, ActionLog } from "./mockData";
+import type { ReportDTO } from "../api/reportsApi";
 
 /**
- * 백엔드 응답 스키마가 확정되지 않은 상태를 고려해서
- * 다양한 키/중첩 구조를 "안전하게" 흡수하는 형태로 작성했습니다.
+ * 백엔드 ReportDTO -> 프론트 AnomalyCase 매핑
+ * (모델명이 LLaVA든 아니든 상관없이 "보고서/케이스"라는 도메인으로만 유지)
  */
-export type LlavaReport = {
-  id?: number | string;
-  filename?: string;
-  image_path?: string;
-
-  dataset?: string;
-  category?: string;
-
-  ground_truth?: string | null;
-
-  // 백엔드가 decision을 주는 경우 우선 사용
-  decision?: string;
-
-  confidence?: number | null;
-  inference_time?: number | null; // seconds
-  datetime?: string;
-
-  // 백엔드가 주는 결함 필드가 있을 수 있음
-  defect_type?: string;
-  location?: string;
-  severity?: string;
-
-  anomaly_score?: number;
-
-  recommendation?: string;
-  summary?: string;
-
-  anomaly_info?: {
-    has_defect?: boolean;
-    defect_type?: string;
-    location?: string;
-    severity?: string;
-    score?: number;
-  };
-
-  product_info?: any;
-};
 
 // 매핑용 상수
 const PACKAGING_CLASS_LABEL: Record<string, string> = {
@@ -93,36 +57,17 @@ function toShift(d: Date): string {
 function normalizeDecision(decisionRaw?: string, gt?: string | null): "OK" | "NG" | "REVIEW" {
   const d = (decisionRaw ?? "").trim().toLowerCase();
 
-  // 이미 OK/NG/REVIEW라면 그대로
   if (d === "ok") return "OK";
   if (d === "ng") return "NG";
   if (d === "review") return "REVIEW";
 
-  // 백엔드가 normal/anomaly/review 같은 값을 준다면 흡수
   if (d === "normal") return "OK";
   if (d === "anomaly") return "NG";
 
-  // fallback: GT 기반 (기존 로직 유지)
   if (!gt) return "REVIEW";
   if (gt === "good") return "OK";
   if (gt === "opened") return "REVIEW";
   return "NG";
-}
-
-function toDefectTypeFromGT(gt?: string | null): string {
-  switch (gt) {
-    case "good":
-      return "none";
-    case "cap_open":
-    case "opened":
-      return "seal_issue";
-    case "deformation":
-      return "missing_component";
-    case "structural_anomalies":
-      return "crack";
-    default:
-      return "scratch";
-  }
 }
 
 function normalizeSeverity(raw?: string, decision?: "OK" | "NG" | "REVIEW"): "low" | "med" | "high" {
@@ -131,14 +76,6 @@ function normalizeSeverity(raw?: string, decision?: "OK" | "NG" | "REVIEW"): "lo
   if (s === "high") return "high";
   if (s === "med" || s === "medium") return "med";
   if (s === "low") return "low";
-  return "low";
-}
-
-function toSeverity(defectType: string, decision: "OK" | "NG" | "REVIEW"): "low" | "med" | "high" {
-  if (decision !== "NG") return "low";
-  if (defectType === "crack") return "high";
-  if (defectType === "missing_component") return "med";
-  if (defectType === "seal_issue") return "med";
   return "low";
 }
 
@@ -200,8 +137,7 @@ function toActionLog(decision: "OK" | "NG" | "REVIEW", ts: Date): ActionLog[] {
   ];
 }
 
-// ✅ 매핑 함수 (product_class 제거 완료)
-export function mapLlavaReportsToAnomalyCases(raw: LlavaReport[]): AnomalyCase[] {
+export function mapReportsToAnomalyCases(raw: ReportDTO[]): AnomalyCase[] {
   return raw.map((r, idx) => {
     const ts = parseDatetime(r.datetime);
 
@@ -211,31 +147,19 @@ export function mapLlavaReportsToAnomalyCases(raw: LlavaReport[]): AnomalyCase[]
 
     const decision = normalizeDecision(r.decision, r.ground_truth);
 
-    const defect_type =
-      r.anomaly_info?.defect_type ??
-      r.defect_type ??
-      toDefectTypeFromGT(r.ground_truth);
-
+    const defect_type = r.defect_type ?? "scratch";
     const line_id = toLineId(`${dataset}-${category}`);
     const shift = toShift(ts);
 
     const loc =
-      (decision === "OK"
+      decision === "OK"
         ? "none"
-        : r.anomaly_info?.location ?? r.location ?? toLocation(decision, `${filename}-${category}`)) as string;
+        : (r.location ?? toLocation(decision, `${filename}-${category}`));
 
-    // severity: 백엔드가 주면 우선, 없으면 heuristic
-    const severity =
-      normalizeSeverity(r.anomaly_info?.severity ?? r.severity, decision) ??
-      toSeverity(defect_type, decision);
+    const severity = normalizeSeverity(r.severity, decision);
 
-    // anomaly_score: 백엔드가 주면 우선, 없으면 fallback
-    const anomaly_score =
-      typeof r.anomaly_info?.score === "number"
-        ? r.anomaly_info!.score
-        : typeof r.anomaly_score === "number"
-          ? r.anomaly_score
-          : toAnomalyScoreFallback(decision, `${filename}-${dataset}-${category}`);
+    // 백엔드가 anomaly_score를 직접 주지 않는 구조라 fallback
+    const anomaly_score = toAnomalyScoreFallback(decision, `${filename}-${dataset}-${category}`);
 
     const affected_area_pct = toAffectedAreaPct(severity, `${filename}-${category}`, decision);
     const defect_confidence = toDefectConfidence(decision, `${filename}-${category}`);
@@ -261,13 +185,15 @@ export function mapLlavaReportsToAnomalyCases(raw: LlavaReport[]): AnomalyCase[]
       affected_area_pct,
       severity,
 
-      model_name: "EfficientAD", // App.tsx에서 activeModel로 덮어씌워짐
+      model_name: "EfficientAD", // App.tsx에서 activeModel로 덮어쓰기
       model_version: "v1.0.0",
       inference_time_ms: typeof r.inference_time === "number" ? Math.round(r.inference_time * 1000) : 0,
 
-      llm_summary: (r.summary && r.summary.trim()) ? r.summary.trim() : toKoreanSummary(decision, defect_type, loc),
-      llm_structured_json: { source: r },
+      llm_summary: (r.summary && r.summary.trim())
+        ? r.summary.trim()
+        : toKoreanSummary(decision, defect_type, loc),
 
+      llm_structured_json: { source: r },
       operator_note: (r.recommendation ?? "").trim(),
       action_log: toActionLog(decision, ts),
     };

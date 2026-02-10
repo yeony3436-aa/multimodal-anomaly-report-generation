@@ -9,15 +9,16 @@ import { AnomalyQueuePage } from "./pages/AnomalyQueuePage";
 import { CaseDetailPage } from "./pages/CaseDetailPage";
 import { ReportBuilderPage } from "./pages/ReportBuilderPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { LlavaReportsPage } from "./pages/LlavaReportsPage";
+import { ReportsPage } from "./pages/ReportsPage";
 
 // data & utils
-import { mapLlavaReportsToAnomalyCases } from "./data/llavaMapper";
+import { mapReportsToAnomalyCases } from "./data/reportMapper";
 import { mockCases, AnomalyCase } from "./data/mockData";
 import { mockAlerts, Alert, NotificationSettings } from "./data/AlertData";
 import { getDateRangeWindow } from "./utils/dateUtils";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+// ✅ API
+import { fetchReports } from "./api/reportsApi";
 
 const MODEL_VERSION: Record<string, string> = {
   PatchCore: "v2.3.1",
@@ -44,7 +45,6 @@ export default function App() {
   const [cases, setCases] = useState<AnomalyCase[]>([]);
   const [alerts] = useState<Alert[]>(mockAlerts);
 
-  // ✅ 전역 모델/임계값/알림설정
   const [activeModel, setActiveModel] = useState<string>(() => {
     return localStorage.getItem("activeModel") ?? "PatchCore";
   });
@@ -74,39 +74,31 @@ export default function App() {
   }, [threshold]);
 
   useEffect(() => {
-    localStorage.setItem(
-      "notificationSettings",
-      JSON.stringify(notificationSettings),
-    );
+    localStorage.setItem("notificationSettings", JSON.stringify(notificationSettings));
   }, [notificationSettings]);
 
-  // ✅ 백엔드에서 llava reports를 받아 케이스로 매핑
+  // ✅ 백엔드 reports -> cases 매핑 (App에서 직접 /llava/reports 호출 금지)
   useEffect(() => {
-    const params = new URLSearchParams();
-    params.set("limit", "5000");
-    params.set("offset", "0");
+    const ac = new AbortController();
 
-    const endpoint = `${API_BASE}/llava/reports?${params.toString()}`;
-    console.log(`📡 데이터 요청 시작: ${endpoint}`);
-
-    fetch(endpoint)
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP 에러! 상태코드: ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        console.log("✅ 백엔드 데이터 수신 성공:", data);
-        const rawItems = Array.isArray(data) ? data : data.items || [];
-        const mappedCases = mapLlavaReportsToAnomalyCases(rawItems);
+    (async () => {
+      try {
+        const { items } = await fetchReports(
+          { limit: 5000, offset: 0 },
+          { signal: ac.signal }
+        );
+        const mappedCases = mapReportsToAnomalyCases(items);
         setCases(mappedCases);
-      })
-      .catch((err) => {
+      } catch (err) {
+        if ((err as any)?.name === "AbortError") return;
         console.error("❌ 데이터 가져오기 실패 (Mock 데이터 사용):", err);
         setCases(mockCases);
-      });
+      }
+    })();
+
+    return () => ac.abort();
   }, []);
 
-  // ✅ 필터 상태
   const [filters, setFilters] = useState<FilterState>({
     dateRange: "today",
     line: "all",
@@ -116,7 +108,6 @@ export default function App() {
     scoreRange: [0, 1],
   });
 
-  // ✅ 모델/임계값 설정을 모든 케이스에 주입 (표시/리포트 기준 통일)
   const casesWithSettings = useMemo(() => {
     const version = MODEL_VERSION[activeModel] ?? "v1.0.0";
     return cases.map((c) => ({
@@ -127,7 +118,6 @@ export default function App() {
     }));
   }, [cases, activeModel, threshold]);
 
-  // ✅ 필터 적용
   const filteredCases = useMemo(() => {
     const window = getDateRangeWindow(filters.dateRange);
 
@@ -137,20 +127,10 @@ export default function App() {
         if (t < window.from.getTime() || t > window.to.getTime()) return false;
       }
       if (filters.line !== "all" && c.line_id !== filters.line) return false;
-      if (
-        filters.productGroup !== "all" &&
-        c.product_group !== filters.productGroup
-      )
-        return false;
-      if (filters.defectType !== "all" && c.defect_type !== filters.defectType)
-        return false;
-      if (filters.decision !== "all" && c.decision !== filters.decision)
-        return false;
-      if (
-        c.anomaly_score < filters.scoreRange[0] ||
-        c.anomaly_score > filters.scoreRange[1]
-      )
-        return false;
+      if (filters.productGroup !== "all" && c.product_group !== filters.productGroup) return false;
+      if (filters.defectType !== "all" && c.defect_type !== filters.defectType) return false;
+      if (filters.decision !== "all" && c.decision !== filters.decision) return false;
+      if (c.anomaly_score < filters.scoreRange[0] || c.anomaly_score > filters.scoreRange[1]) return false;
 
       return true;
     });
@@ -166,7 +146,6 @@ export default function App() {
     setCurrentPage("detail");
   };
 
-  // ✅ 상세페이지에서도 모델/임계값 반영된 case를 사용
   const currentCase = selectedCaseId
     ? casesWithSettings.find((c) => c.id === selectedCaseId) ?? null
     : null;
@@ -200,7 +179,7 @@ export default function App() {
       case "report":
         return <ReportBuilderPage cases={filteredCases} />;
       case "llava":
-        return <LlavaReportsPage apiBase={API_BASE} />;
+        return <ReportsPage />;
       case "settings":
         return (
           <SettingsPage

@@ -1,9 +1,11 @@
+// src/app/components/Sidebar.tsx
 import React from "react";
 import {
   LayoutDashboard,
   ListFilter,
   FileText,
   Settings,
+  ScrollText,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -11,26 +13,20 @@ interface SidebarProps {
   onNavigate: (page: string) => void;
 }
 
-export function Sidebar({
-  currentPage,
-  onNavigate,
-}: SidebarProps) {
+export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const navItems = [
     { id: "overview", label: "개요", icon: LayoutDashboard },
     { id: "queue", label: "이상 큐", icon: ListFilter },
-    { id: "report", label: "리포트", icon: FileText },
+    { id: "report", label: "리포트 작성", icon: FileText },
+    { id: "llava", label: "AI 리포트", icon: ScrollText }, // ✅ 추가
     { id: "settings", label: "설정", icon: Settings },
   ];
 
   return (
     <div className="w-64 bg-gray-900 text-white h-screen flex flex-col sticky top-0">
       <div className="p-6 border-b border-gray-800">
-        <h1 className="text-xl font-semibold">
-          품질 관리 시스템
-        </h1>
-        <p className="text-sm text-gray-400 mt-1">
-          Anomaly Detection
-        </p>
+        <h1 className="text-xl font-semibold">품질 관리 시스템</h1>
+        <p className="text-sm text-gray-400 mt-1">Anomaly Detection</p>
       </div>
 
       <nav className="flex-1 p-4">

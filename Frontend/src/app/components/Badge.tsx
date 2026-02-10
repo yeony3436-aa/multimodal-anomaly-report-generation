@@ -7,13 +7,14 @@ interface BadgeProps {
 }
 
 export function Badge({ children, variant, size = 'md' }: BadgeProps) {
-  const baseClasses = 'inline-flex items-center justify-center rounded font-medium';
-  
+  // ✅ whitespace-nowrap 추가 (줄바꿈 방지)
+  const baseClasses = 'inline-flex items-center justify-center rounded font-medium whitespace-nowrap leading-none';
+
   const sizeClasses = {
     sm: 'px-2 py-0.5 text-xs',
     md: 'px-3 py-1 text-sm'
   };
-  
+
   const variantClasses = {
     OK: 'bg-green-100 text-green-800 border border-green-200',
     NG: 'bg-red-100 text-red-800 border border-red-200',
@@ -25,7 +26,7 @@ export function Badge({ children, variant, size = 'md' }: BadgeProps) {
     pattern: 'bg-amber-50 text-amber-700',
     line_issue: 'bg-orange-50 text-orange-700'
   };
-  
+
   return (
     <span className={`${baseClasses} ${sizeClasses[size]} ${variantClasses[variant]}`}>
       {children}
