@@ -81,17 +81,3 @@ export async function fetchReports(
 
   return { items, total };
 }
-
-export async function fetchReportStats(opts?: { signal?: AbortSignal }) {
-  return apiRequest<ReportStatsDTO>(`${REPORTS_BASE}/stats`, { signal: opts?.signal });
-}
-
-export async function fetchReportById(id: number, opts?: { signal?: AbortSignal }) {
-  return apiRequest<ReportDTO>(`${REPORTS_BASE}/reports/${encodeURIComponent(String(id))}`, {
-    signal: opts?.signal,
-  });
-}
-
-export function getReportJsonUrl(id: number) {
-  return apiUrl(`${REPORTS_BASE}/reports/${encodeURIComponent(String(id))}/json`);
-}

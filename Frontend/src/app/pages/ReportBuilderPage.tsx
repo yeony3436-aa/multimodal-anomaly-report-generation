@@ -106,7 +106,7 @@ export function ReportBuilderPage({ cases }: ReportBuilderPageProps) {
   }, [reportMetrics.defectBreakdown]);
 
   const handleExport = (format: string) => {
-    alert(`현재 상단 필터 조건 기준으로 리포트를 ${format} 형식으로 내보냅니다.`);
+    alert(`이상 큐 페이지의 필터 조건 기준으로 리포트를 ${format} 형식으로 내보냅니다.`);
   };
 
   return (

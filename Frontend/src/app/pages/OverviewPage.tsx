@@ -367,7 +367,6 @@ export function OverviewPage({
       <div className="bg-white border border-gray-200 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-bold text-gray-900">최근 이상 케이스</h3>
-          {/* ✅ 전체 보기 → 삭제 */}
         </div>
 
         <div className="overflow-x-auto">
