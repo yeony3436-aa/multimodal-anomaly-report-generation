@@ -347,21 +347,25 @@ def main():
     for dataset, category in available_models:
         print(f"  - {dataset}/{category}")
 
-    # Pre-load all models and warmup to avoid loading during inference
+    # Group images by category for efficient processing (one model at a time)
     print()
-    print("Pre-loading and warming up models...")
-    for dataset, category in tqdm(available_models, desc="Loading models"):
-        try:
-            model_manager.get_model(dataset, category)
-            model_manager.warmup_model(dataset, category)
-        except Exception as e:
-            print(f"  Failed to load {dataset}/{category}: {e}")
-    print(f"Loaded {len(model_manager._models)} models")
+    print("Grouping images by category...")
+    images_by_category: Dict[Tuple[str, str], List[str]] = {}
+    for image_path in image_paths:
+        if image_path in existing_results:
+            continue
+        dataset, category = parse_image_path(image_path)
+        if (dataset, category) not in available_models:
+            continue
+        key = (dataset, category)
+        if key not in images_by_category:
+            images_by_category[key] = []
+        images_by_category[key].append(image_path)
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    total_to_process = sum(len(v) for v in images_by_category.values())
+    print(f"Images to process: {total_to_process} across {len(images_by_category)} categories")
 
-    # Process images
+    # Process images category by category
     results = list(existing_results.values())
     processed = len(existing_results)
     skipped = 0
@@ -370,76 +374,73 @@ def main():
 
     print()
     print("=" * 60)
-    print("Running inference")
+    print("Running inference (one model at a time)")
     print("=" * 60)
 
-    pbar = tqdm(image_paths, desc="Processing", ncols=100)
-    for image_path in pbar:
-        if image_path in existing_results:
-            continue
+    for (dataset, category), cat_images in images_by_category.items():
+        cat_key = f"{dataset}/{category}"
+        print(f"\n[{cat_key}] Loading model and processing {len(cat_images)} images...")
 
-        dataset, category = parse_image_path(image_path)
-
-        # Check if model exists
-        if (dataset, category) not in available_models:
-            skipped += 1
-            pbar.set_postfix({"done": processed, "skip": skipped, "err": errors})
-            continue
-
-        # Load image
-        image_full_path = data_root / image_path
-        if not image_full_path.exists():
-            errors += 1
-            pbar.set_postfix({"done": processed, "skip": skipped, "err": errors})
-            continue
-
+        # Load and warmup this model only
         try:
-            # Time image loading
-            t_load = time.perf_counter()
-            image = cv2.imread(str(image_full_path))
-            load_time = time.perf_counter() - t_load
+            model_manager.get_model(dataset, category)
+            model_manager.warmup_model(dataset, category)
+        except Exception as e:
+            print(f"  Failed to load model: {e}")
+            skipped += len(cat_images)
+            continue
 
-            if image is None:
+        cat_start = time.perf_counter()
+        pbar = tqdm(cat_images, desc=f"  {cat_key}", ncols=100, leave=False)
+
+        for image_path in pbar:
+            image_full_path = data_root / image_path
+            if not image_full_path.exists():
                 errors += 1
                 continue
 
-            # Run inference
-            t0 = time.perf_counter()
-            result = model_manager.predict(dataset, category, image)
-            infer_time = time.perf_counter() - t0
-            total_inference_time += infer_time
+            try:
+                image = cv2.imread(str(image_full_path))
+                if image is None:
+                    errors += 1
+                    continue
 
-            # Print timing for first 5 images
-            if processed < 5:
-                print(f"  [{image_path}] load: {load_time*1000:.0f}ms, infer: {infer_time*1000:.0f}ms")
+                t0 = time.perf_counter()
+                result = model_manager.predict(dataset, category, image)
+                infer_time = time.perf_counter() - t0
+                total_inference_time += infer_time
 
-            # Build output dict
-            result_dict = {
-                "image_path": image_path,
-                "anomaly_score": round(float(result["anomaly_score"]), 4),
-                "is_anomaly": result["is_anomaly"],
-                "threshold": result["threshold"],
-            }
-
-            if result["anomaly_map"] is not None:
-                location_info = compute_defect_location(result["anomaly_map"], result["threshold"])
-                result_dict["defect_location"] = location_info
-                result_dict["map_stats"] = {
-                    "max": round(float(result["anomaly_map"].max()), 4),
-                    "mean": round(float(result["anomaly_map"].mean()), 4),
-                    "std": round(float(result["anomaly_map"].std()), 4),
+                result_dict = {
+                    "image_path": image_path,
+                    "anomaly_score": round(float(result["anomaly_score"]), 4),
+                    "is_anomaly": result["is_anomaly"],
+                    "threshold": result["threshold"],
                 }
 
-            results.append(result_dict)
-            processed += 1
+                if result["anomaly_map"] is not None:
+                    location_info = compute_defect_location(result["anomaly_map"], result["threshold"])
+                    result_dict["defect_location"] = location_info
+                    result_dict["map_stats"] = {
+                        "max": round(float(result["anomaly_map"].max()), 4),
+                        "mean": round(float(result["anomaly_map"].mean()), 4),
+                        "std": round(float(result["anomaly_map"].std()), 4),
+                    }
 
-        except Exception as e:
-            errors += 1
-            print(f"\nError processing {image_path}: {e}")
+                results.append(result_dict)
+                processed += 1
 
-        pbar.set_postfix({"done": processed, "skip": skipped, "err": errors})
+            except Exception as e:
+                errors += 1
 
-    pbar.close()
+            pbar.set_postfix({"done": processed, "err": errors})
+
+        pbar.close()
+        cat_elapsed = time.perf_counter() - cat_start
+        cat_ms_per_img = (cat_elapsed / len(cat_images) * 1000) if cat_images else 0
+        print(f"  Done: {len(cat_images)} images in {cat_elapsed:.1f}s ({cat_ms_per_img:.0f}ms/img)")
+
+        # Unload model to free GPU memory
+        model_manager.clear_cache()
 
     # Save final results
     output_path.parent.mkdir(parents=True, exist_ok=True)
