@@ -55,3 +55,6 @@ GEMINI.md
 # ===== google drive desktop ====
 .tmp.drivedownload
 .tmp.driveupload
+
+Frontend/node_modules/
+Backend/node_modules/
