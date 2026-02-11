@@ -5,6 +5,7 @@ import {
   defectTypeLabel as defectTypeLabelRaw,
   decisionLabel as decisionLabelRaw,
 } from "../utils/labels";
+import { packagingClasses } from "../data/mockData";
 
 export interface FilterState {
   dateRange: string;
@@ -20,30 +21,20 @@ interface FilterBarProps {
   onFilterChange: (filters: FilterState) => void;
 }
 
-const PRODUCT_GROUP_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "cigarette box", label: "cigarette box" },
-  { value: "drink bottle", label: "drink bottle" },
-  { value: "drink can", label: "drink can" },
-  { value: "food_bottle", label: "food bottle" },
-  { value: "food box", label: "food box" },
-  { value: "food package", label: "food package" },
-  { value: "breakfast box", label: "breakfast box" },
-  { value: "juice bottle", label: "juice bottle" },
-  { value: "pushpins", label: "pushpins" },
-  { value: "screw bag", label: "screw bag" },
-];
+function prettyLabel(s: string) {
+  return (s ?? "").replace(/_/g, " ");
+}
+
+const PRODUCT_GROUP_OPTIONS = packagingClasses.map((v) => ({
+  value: v,
+  label: prettyLabel(v),
+}));
 
 function labelOfProductGroup(value: string) {
   const hit = PRODUCT_GROUP_OPTIONS.find((o) => o.value === value);
   return hit ? hit.label : value;
 }
 
-/**
- * labels.ts의 export 형태가
- * - (key: string) => string (함수)
- * - Record<string,string> (객체 맵)
- * 중 어떤 형태여도 안전하게 label을 뽑도록 함.
- */
 function labelOf(mapper: unknown, key: string) {
   if (!key) return key;
   if (typeof mapper === "function") return (mapper as (k: string) => string)(key);
@@ -175,12 +166,6 @@ export function FilterBar({ filters, onFilterChange }: FilterBarProps) {
             {filters.decision !== "all" && (
               <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded">
                 판정: {labelOf(decisionLabelRaw, filters.decision)}
-              </span>
-            )}
-
-            {(filters.scoreRange[0] > 0 || filters.scoreRange[1] < 1) && (
-              <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded">
-                Score: {filters.scoreRange[0].toFixed(2)} ~ {filters.scoreRange[1].toFixed(2)}
               </span>
             )}
           </div>

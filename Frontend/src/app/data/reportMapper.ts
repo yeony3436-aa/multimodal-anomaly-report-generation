@@ -175,6 +175,11 @@ export function mapReportsToAnomalyCases(raw: ReportDTO[]): AnomalyCase[] {
       product_group: toProductGroup(category),
       image_id: filename,
 
+      image_path: r.image_path ?? undefined,
+      //heatmap_path / overlay_path 는 백엔드에서 생기면 여기에 매핑만 추가하면 끝
+      heatmap_path: r.heatmap_path ?? undefined,
+      overlay_path: r.overlay_path ?? undefined,
+
       decision,
       anomaly_score,
       threshold: 0.65,

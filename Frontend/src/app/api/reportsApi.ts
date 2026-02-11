@@ -1,11 +1,7 @@
 // src/app/api/reportsApi.ts
-import { apiRequest, apiUrl, QueryParams } from "./http";
+import { apiRequest, QueryParams } from "./http";
 
-/**
- * 모델명이 LLaVA -> 다른 것으로 바뀌어도 ("/"")
- * REPORTS_BASE만 바꾸면 프론트 전반은 그대로 유지됨
- */
-const REPORTS_BASE = "/llava"; 
+const REPORTS_BASE = "/llava";
 
 export type ReportDTO = {
   id: number;
@@ -30,20 +26,17 @@ export type ReportDTO = {
   impact: string;
   recommendation: string;
 
-  inference_time: number | null;
+  inference_time: number | null; // seconds
   datetime: string;
+
+  heatmap_path?: string | null;
+  overlay_path?: string | null;
+
 };
 
 export type ReportListDTO = {
   items: ReportDTO[];
   total: number;
-};
-
-export type ReportStatsDTO = {
-  total: number;
-  by_dataset: Record<string, number>;
-  by_category: Record<string, number>;
-  by_decision: Record<string, number>;
 };
 
 export type ReportListQuery = {
@@ -52,19 +45,22 @@ export type ReportListQuery = {
   dataset?: string;
   category?: string;
   decision?: string;
+
+  // 프론트에서만 먼저 “붙일 준비” (백엔드 구현은 나중에)
+  date_from?: string;
+  date_to?: string;
 };
 
-async function fetchReportsRaw(query: ReportListQuery, opts?: { signal?: AbortSignal }) {
+async function fetchReportsRaw(
+  query: ReportListQuery,
+  opts?: { signal?: AbortSignal }
+) {
   return apiRequest<unknown>(`${REPORTS_BASE}/reports`, {
     query: query as QueryParams,
     signal: opts?.signal,
   });
 }
 
-/**
- * 백엔드가 배열로 주든 {items,total}로 주든
- * 프론트는 항상 {items,total}로 받도록 정규화
- */
 export async function fetchReports(
   query: ReportListQuery,
   opts?: { signal?: AbortSignal }
@@ -73,11 +69,38 @@ export async function fetchReports(
 
   const items = Array.isArray(data)
     ? (data as ReportDTO[])
-    : ((data as any)?.items ?? []) as ReportDTO[];
+    : (((data as any)?.items ?? []) as ReportDTO[]);
 
   const total = Array.isArray(data)
     ? items.length
     : Number((data as any)?.total ?? items.length);
 
   return { items, total };
+}
+
+export async function fetchReportsAll(
+  baseQuery?: Omit<ReportListQuery, "limit" | "offset">,
+  opts?: { signal?: AbortSignal; pageSize?: number; maxItems?: number }
+): Promise<ReportDTO[]> {
+  const pageSize = opts?.pageSize ?? 500;
+  const maxItems = opts?.maxItems ?? 5000;
+
+  let offset = 0;
+  let out: ReportDTO[] = [];
+  let total = Infinity;
+
+  while (offset < total && out.length < maxItems) {
+    const { items, total: t } = await fetchReports(
+      { ...(baseQuery ?? {}), limit: pageSize, offset },
+      { signal: opts?.signal }
+    );
+
+    total = Number.isFinite(t) ? t : Infinity;
+    out = out.concat(items);
+
+    if (items.length === 0) break;
+    offset += items.length;
+  }
+
+  return out.slice(0, maxItems);
 }

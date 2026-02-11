@@ -1,6 +1,8 @@
 // src/app/api/http.ts
 export const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+  "http://127.0.0.1:8000";
+
 
 export type QueryParams = Record<
   string,
@@ -8,7 +10,7 @@ export type QueryParams = Record<
 >;
 
 export class ApiError extends Error {
-  status?: number;
+  status?: number; // 0이면 네트워크/abort/timeout
   url?: string;
   body?: unknown;
 
@@ -22,6 +24,13 @@ export class ApiError extends Error {
     this.url = opts?.url;
     this.body = opts?.body;
   }
+}
+
+export function isApiError(err: unknown): err is ApiError {
+  return (
+    err instanceof ApiError ||
+    (typeof err === "object" && !!err && (err as any).name === "ApiError")
+  );
 }
 
 function buildQueryString(query?: QueryParams) {
@@ -41,7 +50,6 @@ export function apiUrl(path: string, query?: QueryParams) {
 }
 
 function fastapiDetailMessage(payload: unknown): string | null {
-
   if (!payload || typeof payload !== "object") return null;
   const detail = (payload as any).detail;
   if (!detail) return null;
@@ -61,6 +69,20 @@ function fastapiDetailMessage(payload: unknown): string | null {
   return null;
 }
 
+function mergeSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  const Any = (AbortSignal as any).any as
+    | undefined
+    | ((signals: AbortSignal[]) => AbortSignal);
+  if (Any) return Any([a, b]);
+
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (a.aborted || b.aborted) controller.abort();
+  a.addEventListener("abort", onAbort, { once: true });
+  b.addEventListener("abort", onAbort, { once: true });
+  return controller.signal;
+}
+
 export async function apiRequest<T>(
   path: string,
   opts?: {
@@ -69,6 +91,8 @@ export async function apiRequest<T>(
     body?: unknown;
     headers?: Record<string, string>;
     signal?: AbortSignal;
+    timeoutMs?: number;
+    credentials?: RequestCredentials;
   }
 ): Promise<T> {
   const url = apiUrl(path, opts?.query);
@@ -78,32 +102,61 @@ export async function apiRequest<T>(
     Accept: "application/json",
     ...(opts?.headers ?? {}),
   };
-
-  // body가 있을 때만 Content-Type을 붙여 preflight 가능성을 줄임
   if (hasBody) headers["Content-Type"] = "application/json";
 
-  const res = await fetch(url, {
-    method: opts?.method ?? "GET",
-    headers,
-    body: hasBody ? JSON.stringify(opts!.body) : undefined,
-    signal: opts?.signal,
-  });
+  const timeoutMs = opts?.timeoutMs ?? 15000;
+  const timeoutController = new AbortController();
+  const timer = window.setTimeout(() => timeoutController.abort(), timeoutMs);
 
-  const contentType = res.headers.get("content-type") ?? "";
-  const isJson = contentType.includes("application/json");
+  const signal = opts?.signal
+    ? mergeSignals(opts.signal, timeoutController.signal)
+    : timeoutController.signal;
 
-  let payload: unknown = null;
   try {
-    payload = isJson ? await res.json() : await res.text();
-  } catch {
-    payload = null;
-  }
+    const res = await fetch(url, {
+      method: opts?.method ?? "GET",
+      headers,
+      body: hasBody ? JSON.stringify(opts!.body) : undefined,
+      signal,
+      credentials: opts?.credentials,
+    });
 
-  if (!res.ok) {
-    const detail = fastapiDetailMessage(payload);
-    const msg = detail ? `${res.status} ${detail}` : `HTTP ${res.status}`;
-    throw new ApiError(msg, { status: res.status, url, body: payload });
-  }
+    if (res.status === 204) return undefined as T;
 
-  return payload as T;
+    const contentType = res.headers.get("content-type") ?? "";
+    const isJson = contentType.includes("application/json");
+
+    let payload: unknown = null;
+    try {
+      if (isJson) {
+        const text = await res.text();
+        payload = text ? JSON.parse(text) : null;
+      } else {
+        payload = await res.text();
+      }
+    } catch {
+      payload = null;
+    }
+
+    if (!res.ok) {
+      const detail = fastapiDetailMessage(payload);
+      const msg = detail ? `${res.status} ${detail}` : `HTTP ${res.status}`;
+      throw new ApiError(msg, { status: res.status, url, body: payload });
+    }
+
+    return payload as T;
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new ApiError("Request aborted/timeout", { status: 0, url });
+    }
+    if (isApiError(err)) throw err;
+    throw new ApiError(err?.message ?? "Network error", { status: 0, url });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+if (import.meta.env.DEV) {
+  console.log("VITE_API_BASE_URL =", import.meta.env.VITE_API_BASE_URL);
+  console.log("API_BASE =", API_BASE);
 }

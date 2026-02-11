@@ -33,6 +33,9 @@ export interface AnomalyCase {
   llm_structured_json: any;
   operator_note?: string;
   action_log: ActionLog[];
+  image_path?: string;
+  heatmap_path?: string;
+  overlay_path?: string;
 }
 
 // 상수 데이터

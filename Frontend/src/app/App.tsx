@@ -1,23 +1,23 @@
 // src/app/App.tsx
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useMemo, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { FilterBar, FilterState } from "./components/FilterBar";
+import { LoadingState } from "./components/LoadingState";
+import { EmptyState } from "./components/EmptyState";
 
-// pages
 import { OverviewPage } from "./pages/OverviewPage";
 import { AnomalyQueuePage } from "./pages/AnomalyQueuePage";
 import { CaseDetailPage } from "./pages/CaseDetailPage";
 import { ReportBuilderPage } from "./pages/ReportBuilderPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
-// data & utils
-import { mapReportsToAnomalyCases } from "./data/reportMapper";
 import { mockCases, AnomalyCase } from "./data/mockData";
 import { mockAlerts, Alert, NotificationSettings } from "./data/AlertData";
 import { getDateRangeWindow } from "./utils/dateUtils";
+import { clamp01 } from "./utils/number";
 
-// ✅ API
-import { fetchReports } from "./api/reportsApi";
+import { useReportCases } from "./hooks/useReportCases";
+import { useLocalStorageState } from "./hooks/useLocalStorageState";
 
 const MODEL_VERSION: Record<string, string> = {
   PatchCore: "v2.3.1",
@@ -32,71 +32,56 @@ const DEFAULT_NOTI: NotificationSettings = {
   consecutiveDefects: true,
 };
 
-function clamp01(x: number) {
-  if (Number.isNaN(x)) return 0;
-  return Math.max(0, Math.min(1, x));
-}
+// Static options for useReportCases to avoid re-renders
+const REPORT_CASES_OPTIONS = {
+  query: {},
+  pageSize: 500,
+  maxItems: 5000,
+};
+
+// Static options for useLocalStorageState
+const MODEL_STORAGE_OPTIONS = {
+  serialize: (v: string) => v,
+  deserialize: (raw: string) => raw || "PatchCore",
+};
+
+const THRESHOLD_STORAGE_OPTIONS = {
+  serialize: (v: number) => String(v),
+  deserialize: (raw: string) => clamp01(Number(raw)),
+  normalize: clamp01,
+};
+
+const NOTIFICATION_STORAGE_OPTIONS = {
+  normalize: (v: NotificationSettings) => ({ ...DEFAULT_NOTI, ...(v ?? {}) }),
+};
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<string>("overview");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
-
-  const [cases, setCases] = useState<AnomalyCase[]>([]);
   const [alerts] = useState<Alert[]>(mockAlerts);
 
-  const [activeModel, setActiveModel] = useState<string>(() => {
-    return localStorage.getItem("activeModel") ?? "PatchCore";
-  });
+  const [activeModel, setActiveModel] = useLocalStorageState<string>(
+    "activeModel", 
+    "PatchCore", 
+    MODEL_STORAGE_OPTIONS
+  );
 
-  const [threshold, setThreshold] = useState<number>(() => {
-    const v = Number(localStorage.getItem("threshold"));
-    return Number.isFinite(v) ? clamp01(v) : 0.65;
-  });
+  const [threshold, setThreshold] = useLocalStorageState<number>(
+    "threshold", 
+    0.65, 
+    THRESHOLD_STORAGE_OPTIONS
+  );
 
   const [notificationSettings, setNotificationSettings] =
-    useState<NotificationSettings>(() => {
-      try {
-        const raw = localStorage.getItem("notificationSettings");
-        if (!raw) return DEFAULT_NOTI;
-        return { ...DEFAULT_NOTI, ...JSON.parse(raw) };
-      } catch {
-        return DEFAULT_NOTI;
-      }
-    });
+    useLocalStorageState<NotificationSettings>(
+      "notificationSettings", 
+      DEFAULT_NOTI, 
+      NOTIFICATION_STORAGE_OPTIONS
+    );
 
-  useEffect(() => {
-    localStorage.setItem("activeModel", activeModel);
-  }, [activeModel]);
+  const { cases: backendCases, loading, error, refetch } = useReportCases(REPORT_CASES_OPTIONS);
 
-  useEffect(() => {
-    localStorage.setItem("threshold", String(threshold));
-  }, [threshold]);
-
-  useEffect(() => {
-    localStorage.setItem("notificationSettings", JSON.stringify(notificationSettings));
-  }, [notificationSettings]);
-
-  // ✅ 백엔드 reports -> cases 매핑
-  useEffect(() => {
-    const ac = new AbortController();
-
-    (async () => {
-      try {
-        const { items } = await fetchReports(
-          { limit: 5000, offset: 0 },
-          { signal: ac.signal }
-        );
-        const mappedCases = mapReportsToAnomalyCases(items);
-        setCases(mappedCases);
-      } catch (err) {
-        if ((err as any)?.name === "AbortError") return;
-        console.error("❌ 데이터 가져오기 실패 (Mock 데이터 사용):", err);
-        setCases(mockCases);
-      }
-    })();
-
-    return () => ac.abort();
-  }, []);
+  const cases: AnomalyCase[] = error ? mockCases : backendCases;
 
   const [filters, setFilters] = useState<FilterState>({
     dateRange: "today",
@@ -149,24 +134,43 @@ export default function App() {
     : null;
 
   const renderPage = () => {
+    if (loading && !error) {
+      return <LoadingState title="불러오는 중" message="백엔드에서 검사 데이터를 가져오고 있습니다." />;
+    }
+
+    if (error && currentPage !== "settings") {
+      return (
+        <div className="p-6">
+          <EmptyState
+            type="error"
+            title="백엔드 데이터 로딩 실패"
+            description="현재는 Mock 데이터를 사용 중입니다. 서버 실행/URL/CORS를 확인해 주세요."
+          />
+          <div className="flex justify-center">
+            <button
+              onClick={refetch}
+              className="px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800"
+            >
+              다시 시도
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     if (currentPage === "detail" && currentCase) {
       return (
         <CaseDetailPage
           caseData={currentCase}
-          onBack={() => setCurrentPage("queue")}
+          onBackToQueue={() => setCurrentPage("queue")}
+          onBackToOverview={() => setCurrentPage("overview")}
         />
       );
     }
 
     switch (currentPage) {
       case "overview":
-        return (
-          <OverviewPage
-            cases={filteredCases}
-            alerts={alerts}
-            activeModel={activeModel}
-          />
-        );
+        return <OverviewPage cases={filteredCases} alerts={alerts} activeModel={activeModel} />;
       case "queue":
         return <AnomalyQueuePage cases={filteredCases} onCaseClick={handleCaseClick} />;
       case "report":
@@ -183,23 +187,17 @@ export default function App() {
           />
         );
       default:
-        return (
-          <OverviewPage
-            cases={filteredCases}
-            alerts={alerts}
-            activeModel={activeModel}
-          />
-        );
+        return <OverviewPage cases={filteredCases} alerts={alerts} activeModel={activeModel} />;
     }
   };
 
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar currentPage={currentPage} onNavigate={handleNavigate} />
+
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* ✅ 운영 리포트(report)에서도 FilterBar 보이게 확장 */}
         {(currentPage === "overview" || currentPage === "queue" || currentPage === "report") && (
-          <FilterBar filters={filters} onFilterChange={(next) => setFilters(next)} />
+          <FilterBar filters={filters} onFilterChange={setFilters} />
         )}
         <div className="flex-1 overflow-y-auto">{renderPage()}</div>
       </div>

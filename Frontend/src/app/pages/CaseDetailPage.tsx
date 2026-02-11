@@ -1,5 +1,5 @@
 // src/app/pages/CaseDetailPage.tsx
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Badge } from "../components/Badge";
 import {
   ChevronRight,
@@ -10,43 +10,64 @@ import {
   RotateCcw,
   FileText,
 } from "lucide-react";
-import { AnomalyCase } from "../data/mockData";
-import { decisionLabel } from "../utils/labels";
+import type { AnomalyCase } from "../data/mockData";
+import { decisionLabel, defectTypeLabel, locationLabel } from "../utils/labels";
+import { getCaseImageUrl, type ImageVariant } from "../services/media";
 
 interface CaseDetailPageProps {
   caseData: AnomalyCase;
-  onBack: () => void;
+  onBackToQueue: () => void;
+  onBackToOverview: () => void;
 }
 
-export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
-  const [activeTab, setActiveTab] = useState<"original" | "heatmap" | "overlay">("original");
+function ImagePanel({ caseData, active }: { caseData: AnomalyCase; active: ImageVariant }) {
+  const url = useMemo(() => getCaseImageUrl(caseData, active), [caseData, active]);
+
+  if (url) {
+    return (
+      <div className="bg-gray-100 rounded-lg aspect-[4/3] overflow-hidden mb-4">
+        <img src={url} alt={`${active}`} className="w-full h-full object-contain bg-black/5" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-gray-100 rounded-lg aspect-[4/3] flex items-center justify-center mb-4">
+      <div className="text-center">
+        <div className="w-24 h-24 bg-gray-300 rounded-lg mx-auto mb-3" />
+        <p className="font-medium text-gray-700">이미지 {active}</p>
+        <p className="text-sm text-gray-500 mt-1">{caseData.image_id}</p>
+        <p className="text-xs text-gray-400 mt-2">* 백엔드에서 경로가 제공되면 자동으로 표시됩니다.</p>
+      </div>
+    </div>
+  );
+}
+
+export function CaseDetailPage({ caseData, onBackToQueue, onBackToOverview }: CaseDetailPageProps) {
+  const [activeTab, setActiveTab] = useState<ImageVariant>("original");
   const [showJson, setShowJson] = useState(false);
   const [note, setNote] = useState("");
 
   const handleAction = (action: string) => {
-    if (action === "저장") {
-      alert("메모를 저장합니다.");
-      return;
-    }
-    if (action === "PDF") {
-      alert("리포트를 PDF 형식으로 내보냅니다.");
-      return;
-    }
+    if (action === "저장") return alert("메모를 저장합니다.");
+    if (action === "PDF") return alert("리포트를 PDF 형식으로 내보냅니다.");
     alert(`${action} 되었습니다.`);
   };
 
   return (
     <div className="p-8">
-      {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-sm text-gray-600 mb-6">
-        <button onClick={onBack} className="hover:text-gray-900">개요</button>
+        <button onClick={onBackToOverview} className="hover:text-gray-900">
+          개요
+        </button>
         <ChevronRight className="w-4 h-4" />
-        <button onClick={onBack} className="hover:text-gray-900">이상 큐</button>
+        <button onClick={onBackToQueue} className="hover:text-gray-900">
+          이상 큐
+        </button>
         <ChevronRight className="w-4 h-4" />
         <span className="text-gray-900 font-medium">케이스 상세</span>
       </div>
 
-      {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 mb-2">{caseData.id}</h1>
@@ -63,53 +84,28 @@ export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
       </div>
 
       <div className="grid grid-cols-3 gap-6">
-        {/* Left Column */}
         <div className="col-span-2">
-          {/* Image Viewer */}
           <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-medium text-gray-900">검사 이미지</h2>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setActiveTab("original")}
-                  className={`px-3 py-1.5 text-sm rounded ${
-                    activeTab === "original" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                  }`}
-                >
-                  원본
-                </button>
-                <button
-                  onClick={() => setActiveTab("heatmap")}
-                  className={`px-3 py-1.5 text-sm rounded ${
-                    activeTab === "heatmap" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                  }`}
-                >
-                  Heatmap
-                </button>
-                <button
-                  onClick={() => setActiveTab("overlay")}
-                  className={`px-3 py-1.5 text-sm rounded ${
-                    activeTab === "overlay" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                  }`}
-                >
-                  Overlay
-                </button>
+                {(["original", "heatmap", "overlay"] as const).map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => setActiveTab(k)}
+                    className={`px-3 py-1.5 text-sm rounded ${
+                      activeTab === k
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    {k === "original" ? "원본" : k === "heatmap" ? "Heatmap" : "Overlay"}
+                  </button>
+                ))}
               </div>
             </div>
 
-            <div className="bg-gray-100 rounded-lg aspect-[4/3] flex items-center justify-center mb-4">
-              <div className="text-center">
-                <div className="w-24 h-24 bg-gray-300 rounded-lg mx-auto mb-3"></div>
-                <p className="font-medium text-gray-700">이미지 {activeTab}</p>
-                <p className="text-sm text-gray-500 mt-1">{caseData.image_id}</p>
-                {activeTab === "heatmap" && (
-                  <p className="text-xs text-gray-400 mt-2">이상 영역 히트맵 시각화</p>
-                )}
-                {activeTab === "overlay" && (
-                  <p className="text-xs text-gray-400 mt-2">검출 영역 오버레이 표시</p>
-                )}
-              </div>
-            </div>
+            <ImagePanel caseData={caseData} active={activeTab} />
 
             <div className="grid grid-cols-3 gap-4 text-sm">
               <div>
@@ -123,7 +119,6 @@ export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
             </div>
           </div>
 
-          {/* Evidence Summary */}
           <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
             <h2 className="text-lg font-medium text-gray-900 mb-4">근거 요약</h2>
 
@@ -133,62 +128,31 @@ export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
                 <span className="text-2xl font-semibold text-gray-900">{caseData.anomaly_score.toFixed(3)}</span>
               </div>
 
-              <div className="relative">
-                <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${
-                      caseData.anomaly_score >= 0.8
-                        ? "bg-red-500"
-                        : caseData.anomaly_score >= 0.65
-                          ? "bg-orange-500"
-                          : "bg-green-500"
-                    }`}
-                    style={{ width: `${caseData.anomaly_score * 100}%` }}
-                  />
-                </div>
-
+              <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className={`h-full ${
+                    caseData.anomaly_score >= 0.8
+                      ? "bg-red-500"
+                      : caseData.anomaly_score >= 0.65
+                        ? "bg-orange-500"
+                        : "bg-green-500"
+                  }`}
+                  style={{ width: `${caseData.anomaly_score * 100}%` }}
+                />
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-6 mb-6">
               <div>
                 <label className="text-sm font-medium text-gray-500 uppercase block mb-2">결함 타입</label>
-                <p className="text-lg text-gray-900">
-                  {caseData.defect_type === "seal_issue"
-                    ? "실링 불량"
-                    : caseData.defect_type === "contamination"
-                      ? "오염"
-                      : caseData.defect_type === "crack"
-                        ? "파손/균열"
-                        : caseData.defect_type === "missing_component"
-                          ? "구성요소 누락"
-                          : caseData.defect_type === "scratch"
-                            ? "스크래치"
-                            : "-"}
-                </p>
-                <p className="text-sm text-gray-500 mt-1">
-                  신뢰도: {(caseData.defect_confidence * 100).toFixed(1)}%
-                </p>
+                <p className="text-lg text-gray-900">{defectTypeLabel(caseData.defect_type)}</p>
+                <p className="text-sm text-gray-500 mt-1">신뢰도: {(caseData.defect_confidence * 100).toFixed(1)}%</p>
               </div>
 
               <div>
                 <label className="text-sm font-medium text-gray-500 uppercase block mb-2">위치</label>
-                <p className="text-lg text-gray-900">
-                  {caseData.location === "top-left"
-                    ? "상단 좌측"
-                    : caseData.location === "top-right"
-                      ? "상단 우측"
-                      : caseData.location === "bottom-left"
-                        ? "하단 좌측"
-                        : caseData.location === "bottom-right"
-                          ? "하단 우측"
-                          : caseData.location === "center"
-                            ? "중앙"
-                            : "-"}
-                </p>
-                <p className="text-sm text-gray-500 mt-1">
-                  영향 면적: {caseData.affected_area_pct.toFixed(1)}%
-                </p>
+                <p className="text-lg text-gray-900">{locationLabel(caseData.location)}</p>
+                <p className="text-sm text-gray-500 mt-1">영향 면적: {caseData.affected_area_pct.toFixed(1)}%</p>
               </div>
             </div>
 
@@ -214,7 +178,6 @@ export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
             </div>
           </div>
 
-          {/* Action Log */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
             <h2 className="text-lg font-medium text-gray-900 mb-4">작업 로그</h2>
             <div className="space-y-3">
@@ -238,11 +201,9 @@ export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
           </div>
         </div>
 
-        {/* Right Column */}
         <div className="space-y-6">
-          {/* Actions */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">액션</h2>
+            <h2 className="text-lg font-medium text-gray-900 mb-4">처리</h2>
             <div className="space-y-2">
               <button
                 onClick={() => handleAction("승인")}
@@ -268,7 +229,6 @@ export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
             </div>
           </div>
 
-          {/* Add Note */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
             <h2 className="text-lg font-medium text-gray-900 mb-4">메모 추가</h2>
             <textarea
@@ -297,52 +257,15 @@ export function CaseDetailPage({ caseData, onBack }: CaseDetailPageProps) {
             )}
           </div>
 
-          {/* Product Info */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">제품 정보</h2>
-            <div className="space-y-3 text-sm">
-              <div>
-                <span className="text-gray-500 block mb-1">제품군</span>
-                <span className="font-medium text-gray-900">{caseData.product_group}</span>
-              </div>
-              <div>
-                <span className="text-gray-500 block mb-1">생산 라인</span>
-                <span className="font-medium text-gray-900">{caseData.line_id}</span>
-              </div>
-              <div>
-                <span className="text-gray-500 block mb-1">교대조</span>
-                <span className="font-medium text-gray-900">{caseData.shift}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Model Info */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">모델 정보</h2>
-            <div className="space-y-3 text-sm">
-              <div>
-                <span className="text-gray-500 block mb-1">모델명</span>
-                <span className="font-medium text-gray-900">{caseData.model_name}</span>
-              </div>
-              <div>
-                <span className="text-gray-500 block mb-1">추론 시간</span>
-                <span className="font-medium text-gray-900">{caseData.inference_time_ms}ms</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Export */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
             <h2 className="text-lg font-medium text-gray-900 mb-4">내보내기</h2>
-            <div className="space-y-2">
-              <button
-                onClick={() => handleAction("PDF")}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                <Download className="w-4 h-4" />
-                <span>PDF 다운로드</span>
-              </button>
-            </div>
+            <button
+              onClick={() => handleAction("PDF")}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              <Download className="w-4 h-4" />
+              <span>PDF 다운로드</span>
+            </button>
           </div>
         </div>
       </div>

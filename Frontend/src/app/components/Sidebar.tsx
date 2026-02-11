@@ -16,7 +16,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const navItems = [
     { id: "overview", label: "개요", icon: LayoutDashboard },
     { id: "queue", label: "이상 큐", icon: ListFilter },
-    { id: "report", label: "운영 리포트", icon: FileText }, 
+    { id: "report", label: "AI 리포트", icon: FileText }, 
     { id: "settings", label: "설정", icon: Settings },
   ];
 

@@ -2,6 +2,7 @@
 import React from "react";
 import { Settings, Users, Bell, Database } from "lucide-react";
 import type { NotificationSettings } from "../data/AlertData";
+import { clamp01 } from "../utils/number";
 
 interface SettingsPageProps {
   activeModel: string;
@@ -14,10 +15,7 @@ interface SettingsPageProps {
   onNotificationsChange: (next: NotificationSettings) => void;
 }
 
-function clamp01(x: number) {
-  if (Number.isNaN(x)) return 0;
-  return Math.max(0, Math.min(1, x));
-}
+
 
 export function SettingsPage({
   activeModel,
@@ -215,10 +213,6 @@ export function SettingsPage({
           </div>
 
           <div className="space-y-3 text-sm">
-            <div className="flex justify-between">
-              <span className="text-gray-600">버전</span>
-              <span className="font-mono text-gray-900">v2.3.1</span>
-            </div>
             <div className="flex justify-between">
               <span className="text-gray-600">마지막 업데이트</span>
               <span className="text-gray-900">2026-02-01</span>

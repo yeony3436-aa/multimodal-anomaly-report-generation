@@ -1,7 +1,7 @@
 // src/app/pages/OverviewPage.tsx
 import React, { useMemo } from "react";
-import { AnomalyCase } from "../data/mockData";
-import { Alert } from "../data/AlertData";
+import type { AnomalyCase } from "../data/mockData";
+import type { Alert } from "../data/AlertData";
 import {
   Activity,
   AlertTriangle,
@@ -22,12 +22,8 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-
-interface OverviewPageProps {
-  cases: AnomalyCase[];
-  alerts: Alert[];
-  activeModel: string;
-}
+import { buildAggregates, toHourlyDecisionTrend } from "../selectors/caseSelectors";
+import { defectTypeLabel } from "../utils/labels";
 
 function KPICard({
   title,
@@ -54,33 +50,17 @@ function KPICard({
   );
 }
 
-function defectKo(defectType?: string) {
-  if (!defectType) return "이상";
-  return defectType === "seal_issue"
-    ? "실링 불량"
-    : defectType === "contamination"
-      ? "오염"
-      : defectType === "crack"
-        ? "파손/균열"
-        : defectType === "missing_component"
-          ? "구성요소 누락"
-          : defectType === "scratch"
-            ? "스크래치"
-            : defectType;
-}
-
-// ✅ 알림 설명을 "필드 기반"으로 생성
 function alertDescription(a: Alert) {
   if (a.type === "review") {
     const pg = a.product_group ?? "제품";
     const s = typeof a.score === "number" ? ` (Score: ${a.score.toFixed(2)})` : "";
-    return `${pg} 제품에 ${defectKo(a.defect_type)}가 의심됩니다.${s} 육안 검사가 필요합니다.`;
+    return `${pg} 제품에 ${defectTypeLabel(a.defect_type)}가 의심됩니다.${s} 육안 검사가 필요합니다.`;
   }
 
   if (a.type === "critical") {
     const line = a.line_id ?? "라인";
     const conf = typeof a.confidence === "number" ? `${Math.round(a.confidence * 100)}%` : "";
-    return `${line}에서 신뢰도 ${conf}의 ${defectKo(a.defect_type)}이 감지되었습니다. 즉시 확인 바랍니다.`;
+    return `${line}에서 신뢰도 ${conf}의 ${defectTypeLabel(a.defect_type)}이 감지되었습니다. 즉시 확인 바랍니다.`;
   }
 
   if (a.type === "consecutive") {
@@ -93,42 +73,20 @@ function alertDescription(a: Alert) {
   return a.description ?? "";
 }
 
+interface OverviewPageProps {
+  cases: AnomalyCase[];
+  alerts: Alert[];
+  activeModel: string;
+}
+
 export function OverviewPage({ cases, alerts, activeModel }: OverviewPageProps) {
-  const total = cases.length;
-  const defects = cases.filter((c) => c.decision === "NG").length;
-  const reviews = cases.filter((c) => c.decision === "REVIEW").length;
+  const agg = useMemo(() => buildAggregates(cases), [cases]);
 
-  const defectRate = total > 0 ? ((defects / total) * 100).toFixed(1) : "0.0";
-  const reviewRate = total > 0 ? ((reviews / total) * 100).toFixed(1) : "0.0";
-  const avgInference =
-    total > 0
-      ? Math.round(cases.reduce((acc, c) => acc + c.inference_time_ms, 0) / total)
-      : 0;
+  const defectRate = agg.total ? ((agg.ng / agg.total) * 100).toFixed(1) : "0.0";
+  const reviewRate = agg.total ? ((agg.review / agg.total) * 100).toFixed(1) : "0.0";
+  const avgInference = agg.total ? Math.round(agg.avgInference) : 0;
 
-  // ✅ (운영 리포트에 있던) 시간대별 검사 결과 차트를 개요로 이동
-  const hourlyTrend = useMemo(() => {
-    const hourlyData: {
-      [key: number]: { total: number; ng: number; review: number; ok: number };
-    } = {};
-
-    cases.forEach((c) => {
-      const hour = c.timestamp.getHours();
-      if (!hourlyData[hour]) hourlyData[hour] = { total: 0, ng: 0, review: 0, ok: 0 };
-      hourlyData[hour].total++;
-      if (c.decision === "NG") hourlyData[hour].ng++;
-      else if (c.decision === "REVIEW") hourlyData[hour].review++;
-      else hourlyData[hour].ok++;
-    });
-
-    return Object.entries(hourlyData)
-      .map(([hour, data]) => ({
-        hour: `${hour}시`,
-        불량: data.ng,
-        재검토: data.review,
-        정상: data.ok,
-      }))
-      .sort((a, b) => parseInt(a.hour) - parseInt(b.hour));
-  }, [cases]);
+  const hourlyTrend = useMemo(() => toHourlyDecisionTrend(agg), [agg]);
 
   const getAlertIcon = (type: Alert["type"]) => {
     switch (type) {
@@ -153,13 +111,12 @@ export function OverviewPage({ cases, alerts, activeModel }: OverviewPageProps) 
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KPICard title="검사 수" value={total.toLocaleString()} subtext="오늘 누적 검사량" icon={Activity} />
+        <KPICard title="검사 수" value={agg.total.toLocaleString()} subtext="오늘 누적 검사량" icon={Activity} />
         <KPICard title="불량률" value={`${defectRate}%`} subtext="오늘 검사 대비 불량" icon={AlertTriangle} />
         <KPICard title="재검률" value={`${reviewRate}%`} subtext="AI 판정 보류 건" icon={CheckCircle} />
         <KPICard title="평균 추론 시간" value={`${avgInference}ms`} subtext={activeModel} icon={Clock} />
       </div>
 
-      {/* Alerts */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
@@ -221,7 +178,6 @@ export function OverviewPage({ cases, alerts, activeModel }: OverviewPageProps) 
         </div>
       </div>
 
-      {/* ✅ 운영 리포트의 "시간대별 검사 결과"를 개요로 이동 (최근 이상 케이스 자리 대체) */}
       <div className="bg-white border border-gray-200 rounded-lg p-6">
         <h3 className="text-lg font-bold text-gray-900 mb-4">시간대별 검사 결과</h3>
         <ResponsiveContainer width="100%" height={320}>
