@@ -519,14 +519,14 @@ class PatchCoreTrainer:
         if save_json is None:
             save_json = self.output_config.get("save_json", False)
         if save_json:
-            self._save_predictions_json(all_predictions, dataset, category)
+            self.save_predictions_json(all_predictions, dataset, category)
 
         del model
         self.cleanup_memory()
 
         return all_predictions
 
-    def _save_predictions_json(self, predictions, dataset: str, category: str):
+    def save_predictions_json(self, predictions, dataset: str, category: str):
         target_version = self.predict_config.get("version", None)
         if target_version is not None:
             version_tag = f"v{target_version}"
@@ -677,8 +677,11 @@ class PatchCoreTrainer:
             infer_t = self.last_inference_time
             n_img = self.last_n_images
             ms_per_img = (infer_t / n_img * 1000) if n_img > 0 else 0
-            msg = f"[{idx}/{total}] {dataset}/{category} done (inference: {infer_t:.2f}s, {ms_per_img:.1f}ms/img)"
-            print(f"  {msg}")
+            msg = (
+                f"[{idx}/{total}] {dataset}/{category} done "
+                f"(inference: {infer_t:.2f}s, {ms_per_img:.1f}ms/img)"
+            )
+            print(f"✓ {msg}")
             get_inference_logger().info(msg)
 
         get_inference_logger().info(f"predict_all completed: {total} categories")
