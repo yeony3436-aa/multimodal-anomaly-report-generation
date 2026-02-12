@@ -1,7 +1,8 @@
 // src/app/api/reportsApi.ts
 import { apiRequest, QueryParams } from "./http";
 
-const REPORTS_BASE = "/llava";
+const REPORTS_PATH =
+  (import.meta.env.VITE_REPORTS_PATH as string | undefined) ?? "/llava/reports";
 
 export type ReportDTO = {
   id: number;
@@ -45,21 +46,17 @@ export type ReportListQuery = {
   dataset?: string;
   category?: string;
   decision?: string;
-
-  // 프론트에서만 먼저 “붙일 준비” (백엔드 구현은 나중에)
   date_from?: string;
   date_to?: string;
 };
 
-async function fetchReportsRaw(
-  query: ReportListQuery,
-  opts?: { signal?: AbortSignal }
-) {
-  return apiRequest<unknown>(`${REPORTS_BASE}/reports`, {
+async function fetchReportsRaw(query: ReportListQuery, opts?: { signal?: AbortSignal }) {
+  return apiRequest<unknown>(REPORTS_PATH, {
     query: query as QueryParams,
     signal: opts?.signal,
   });
 }
+
 
 export async function fetchReports(
   query: ReportListQuery,
@@ -67,10 +64,15 @@ export async function fetchReports(
 ): Promise<ReportListDTO> {
   const data = await fetchReportsRaw(query, opts);
 
-  const items = Array.isArray(data)
-    ? (data as ReportDTO[])
-    : (((data as any)?.items ?? []) as ReportDTO[]);
+  // 1) 서버가 배열로 주든, {items,total}로 주든 통일해서 rawItems로 뽑기
+  const rawItems = Array.isArray(data)
+    ? data
+    : ((data as any)?.items ?? []);
 
+  // 2) rawItems를 "항상 ReportDTO"로 정규화
+  const items = (rawItems as any[]).map((x, i) => normalizeRemoteToReportDTO(x, i));
+
+  // 3) total 계산(없으면 items.length)
   const total = Array.isArray(data)
     ? items.length
     : Number((data as any)?.total ?? items.length);
@@ -104,3 +106,89 @@ export async function fetchReportsAll(
 
   return out.slice(0, maxItems);
 }
+
+function normLocation(raw?: string) {
+  const s = (raw ?? "").trim().toLowerCase();
+  if (!s) return "none";
+  // "top right" -> "top-right"
+  return s.replace(/\s+/g, "-");
+}
+
+function normSeverity(raw?: string) {
+  const s = (raw ?? "").trim().toLowerCase();
+  if (s === "high") return "high";
+  if (s === "medium" || s === "med") return "med";
+  return "low";
+}
+
+function basename(p?: string) {
+  const s = (p ?? "").trim();
+  if (!s) return "";
+  return s.split("/").pop() ?? s;
+}
+
+
+// 팀원 서버 응답 -> ReportDTO로 변환 (추가)
+function normalizeRemoteToReportDTO(x: any, idx: number): ReportDTO {
+  const llm = x?.llm_report ?? {};
+  const sum = x?.llm_summary ?? {};
+
+  // ✅ decision: 팀원 서버는 is_anomaly_llm이 있음
+  const decision =
+    typeof x?.decision === "string"
+      ? x.decision
+      : x?.is_anomaly_llm === true
+        ? "ng"
+        : "ok";
+
+  // ✅ 서버 내부 절대경로는 브라우저에서 접근 불가 → 일단 null 처리(placeholder로 표시)
+  //    이미지 표시가 필요하면 백엔드가 /media/... 같은 URL을 내려주도록 바꾸는 게 정석입니다.
+  const rawImagePath = typeof x?.image_path === "string" ? x.image_path : "";
+  const image_path =
+    rawImagePath.startsWith("/home/") ? "" : rawImagePath;
+
+  return {
+    id: Number(x?.id ?? idx + 1),
+
+    filename: String(x?.filename ?? basename(rawImagePath) ?? `remote_${idx}.png`),
+    image_path,
+
+    // 팀원 서버는 mask_path가 있음 → overlay로 우선 매핑(백엔드에서 URL 제공 시 표시됨)
+    heatmap_path: x?.heatmap_path ?? null,
+    overlay_path: x?.mask_path ?? null,
+
+    dataset: String(x?.dataset ?? "remote"),
+    category: String(x?.category ?? llm?.anomaly_type ?? "unknown"),
+    ground_truth: x?.ground_truth ?? null,
+
+    decision: String(decision),
+    confidence:
+      typeof llm?.confidence === "number" ? llm.confidence : null,
+
+    has_defect:
+      typeof x?.has_defect === "number"
+        ? x.has_defect
+        : (decision.toLowerCase() === "ng" ? 1 : 0),
+
+    defect_type: String(x?.defect_type ?? llm?.anomaly_type ?? "none"),
+    location: normLocation(llm?.location ?? x?.location),
+    severity: normSeverity(llm?.severity ?? sum?.risk_level ?? x?.severity),
+
+    defect_description: String(x?.defect_description ?? llm?.description ?? ""),
+    possible_cause: String(x?.possible_cause ?? ""),
+    product_description: String(x?.product_description ?? ""),
+
+    summary: String(x?.summary ?? sum?.summary ?? ""),
+    impact: String(x?.impact ?? ""),
+    recommendation: String(x?.recommendation ?? llm?.recommendation ?? ""),
+
+    // 팀원 서버는 llm_inference_duration이 있음(초로 가정)
+    inference_time:
+      typeof x?.inference_time === "number"
+        ? x.inference_time
+        : (typeof x?.llm_inference_duration === "number" ? x.llm_inference_duration : null),
+
+    datetime: String(x?.datetime ?? x?.llm_start_time ?? new Date().toISOString()),
+  };
+}
+

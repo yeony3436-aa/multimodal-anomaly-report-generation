@@ -4,7 +4,7 @@ import { packagingClasses } from "../data/mockData";
 import { defectTypeLabel } from "../utils/labels";
 
 export type HourlyDecisionRow = {
-  hour: string; // "13시"
+  hour: string; 
   불량: number;
   재검토: number;
   정상: number;
